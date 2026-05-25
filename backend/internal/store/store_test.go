@@ -1,6 +1,7 @@
 package store
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/robinmalmstrom/ccdash/backend/internal/models"
@@ -153,6 +154,44 @@ func TestMessagesAndUsage(t *testing.T) {
 	}
 	if len(summary.BySession) != 1 {
 		t.Fatalf("expected 1 session in summary, got %d", len(summary.BySession))
+	}
+}
+
+func TestAttachments(t *testing.T) {
+	s := newTestStore(t)
+	p, _ := s.CreateProject("demo", "/tmp/demo")
+	sess, _ := s.CreateSession(p.ID, "task", "m", models.ModeDefault)
+	msg, _ := s.AddMessage(sess.ID, "user", "see image-1")
+
+	raw := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d}
+	att, err := s.AddAttachment(msg.ID, sess.ID, "image-1.png", "image/png", raw)
+	if err != nil {
+		t.Fatalf("add attachment: %v", err)
+	}
+	if att.ID == "" || att.Name != "image-1.png" {
+		t.Fatalf("unexpected attachment: %+v", att)
+	}
+
+	// GetAttachment returns the bytes.
+	got, err := s.GetAttachment(att.ID)
+	if err != nil {
+		t.Fatalf("get attachment: %v", err)
+	}
+	if got.MediaType != "image/png" || string(got.Data) != string(raw) {
+		t.Fatalf("attachment round-trip mismatch: %+v", got)
+	}
+
+	// ListMessages hydrates attachment metadata (without bytes).
+	msgs, _ := s.ListMessages(sess.ID)
+	if len(msgs) != 1 || len(msgs[0].Attachments) != 1 {
+		t.Fatalf("expected 1 message with 1 attachment, got %+v", msgs)
+	}
+	if msgs[0].Attachments[0].Name != "image-1.png" || msgs[0].Attachments[0].Data != nil {
+		t.Fatalf("unexpected listed attachment: %+v", msgs[0].Attachments[0])
+	}
+
+	if _, err := s.GetAttachment("nope"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
 }
 

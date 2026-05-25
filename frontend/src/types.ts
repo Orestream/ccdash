@@ -32,12 +32,24 @@ export interface Session {
 
 export type MessageRole = 'user' | 'assistant' | 'thinking' | 'system' | 'tool';
 
+// Attachment — an image pasted onto a user message. Bytes are fetched lazily
+// from GET /api/attachments/{id}; this is metadata only.
+export interface Attachment {
+  id: string;
+  messageId: string;
+  sessionId: string;
+  name: string;
+  mediaType: string;
+  createdAt: string;
+}
+
 export interface Message {
   id: string;
   sessionId: string;
   role: MessageRole;
   content: string;
   createdAt: string;
+  attachments?: Attachment[];
 }
 
 export interface UsageRecord {
@@ -136,8 +148,18 @@ export interface CreateSessionInput {
   permissionMode?: PermissionMode;
 }
 
+// ImageInput — a pasted image to send with a message. data is base64 (no data:
+// URL prefix); mediaType is the image MIME type; name is the display label
+// (image-1.png, …) used both in the transcript and in the reference text.
+export interface ImageInput {
+  name: string;
+  mediaType: string;
+  data: string;
+}
+
 export interface SendMessageInput {
   content: string;
+  images?: ImageInput[];
 }
 
 export interface RespondPermissionInput {

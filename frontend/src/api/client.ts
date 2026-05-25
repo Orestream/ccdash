@@ -158,6 +158,12 @@ export function setSessionMode(
   });
 }
 
+// attachmentUrl returns the URL that serves an attachment's raw bytes, suitable
+// for an <img src>. Goes through the same /api proxy as every other request.
+export function attachmentUrl(id: string): string {
+  return `${BASE}/attachments/${encodeURIComponent(id)}`;
+}
+
 export function renameSession(sessionId: string, title: string): Promise<Session> {
   return request<Session>(`/sessions/${encodeURIComponent(sessionId)}/title`, {
     method: 'PATCH',

@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -19,7 +20,7 @@ import (
 // to exercise the HTTP surface without a real claude process.
 type nopSession struct{}
 
-func (nopSession) Send(string) error { return nil }
+func (nopSession) Send(string, []claude.Image) error { return nil }
 func (nopSession) Respond(string, claude.Decision, json.RawMessage, string) error {
 	return nil
 }
@@ -189,6 +190,49 @@ func TestSetMode(t *testing.T) {
 	rec = do(t, h, http.MethodPatch, "/api/sessions/"+sess.ID+"/mode", map[string]string{"permissionMode": "nope"})
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for bad mode, got %d", rec.Code)
+	}
+}
+
+func TestSendMessageWithImage(t *testing.T) {
+	h := newTestServer(t)
+	sess := createSessionForTest(t, h, map[string]string{"title": "t"})
+	raw := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a}
+
+	rec := do(t, h, http.MethodPost, "/api/sessions/"+sess.ID+"/messages", map[string]any{
+		"content": "see image-1",
+		"images": []map[string]string{
+			{"name": "image-1.png", "mediaType": "image/png", "data": base64.StdEncoding.EncodeToString(raw)},
+		},
+	})
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("send status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var msg models.Message
+	_ = json.Unmarshal(rec.Body.Bytes(), &msg)
+	if len(msg.Attachments) != 1 || msg.Attachments[0].Name != "image-1.png" {
+		t.Fatalf("expected 1 attachment, got %+v", msg.Attachments)
+	}
+
+	// The bytes are served back with the right content type.
+	rec = do(t, h, http.MethodGet, "/api/attachments/"+msg.Attachments[0].ID, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get attachment status = %d", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "image/png" {
+		t.Fatalf("unexpected content-type: %q", ct)
+	}
+	if !bytes.Equal(rec.Body.Bytes(), raw) {
+		t.Fatalf("served bytes do not match stored image")
+	}
+
+	// Unsupported media type is rejected.
+	rec = do(t, h, http.MethodPost, "/api/sessions/"+sess.ID+"/messages", map[string]any{
+		"images": []map[string]string{
+			{"name": "a.svg", "mediaType": "image/svg+xml", "data": base64.StdEncoding.EncodeToString(raw)},
+		},
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for unsupported media type, got %d", rec.Code)
 	}
 }
 

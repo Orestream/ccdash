@@ -114,6 +114,45 @@ describe('SessionView composer', () => {
     expect(spy).not.toHaveBeenCalled();
   });
 
+  it('attaches a pasted image as image-1.png and shows a chip', async () => {
+    render(<SessionView sessionId="s1" />);
+    const textarea = await screen.findByLabelText('Prompt');
+    const file = new File(['fake-png-bytes'], 'pasted.png', { type: 'image/png' });
+    fireEvent.paste(textarea, {
+      clipboardData: {
+        items: [{ kind: 'file', type: 'image/png', getAsFile: () => file }],
+      },
+    });
+    // FileReader resolves async, so wait for the chip.
+    expect(await screen.findByText('image-1.png')).toBeInTheDocument();
+    // Send button is enabled even with empty text once an image is attached.
+    expect(screen.getByRole('button', { name: /send/i })).not.toBeDisabled();
+  });
+
+  it('renders attachment thumbnails for a message', async () => {
+    const withImage: Message = {
+      id: 'm9',
+      sessionId: 's1',
+      role: 'user',
+      content: 'see image-1',
+      createdAt: '2026-05-25T12:00:50Z',
+      attachments: [
+        {
+          id: 'att1',
+          messageId: 'm9',
+          sessionId: 's1',
+          name: 'image-1.png',
+          mediaType: 'image/png',
+          createdAt: '2026-05-25T12:00:50Z',
+        },
+      ],
+    };
+    vi.spyOn(client, 'listMessages').mockResolvedValue([withImage]);
+    render(<SessionView sessionId="s1" />);
+    const img = (await screen.findByAltText('image-1.png')) as HTMLImageElement;
+    expect(img).toHaveAttribute('src', '/api/attachments/att1');
+  });
+
   it('renders a tool message as tool name + file basename', async () => {
     const toolMsg: Message = {
       id: 't1',

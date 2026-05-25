@@ -3,6 +3,7 @@
 package api
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -83,6 +84,8 @@ func (s *Server) Router() http.Handler {
 			r.Post("/{id}/permissions/{requestId}", s.handleRespondPermission)
 			r.Get("/{id}/usage", s.handleSessionUsage)
 		})
+
+		r.Get("/attachments/{id}", s.handleGetAttachment)
 
 		r.Get("/usage", s.handleUsageSummary)
 	})
@@ -253,24 +256,84 @@ func (s *Server) handleListMessages(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, messages)
 }
 
+// Image limits for pasted attachments.
+const (
+	maxImagesPerMessage = 8
+	maxImageBytes       = 10 << 20  // 10 MiB decoded
+	maxSendBodyBytes    = 120 << 20 // generous cap on the whole request
+)
+
+var allowedImageTypes = map[string]bool{
+	"image/png":  true,
+	"image/jpeg": true,
+	"image/gif":  true,
+	"image/webp": true,
+}
+
 func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
+	r.Body = http.MaxBytesReader(w, r.Body, maxSendBodyBytes)
 	var body struct {
 		Content string `json:"content"`
+		Images  []struct {
+			Name      string `json:"name"`
+			MediaType string `json:"mediaType"`
+			Data      string `json:"data"` // base64 (no data: URL prefix)
+		} `json:"images"`
 	}
 	if !decode(w, r, &body) {
 		return
 	}
-	if body.Content == "" {
-		writeErr(w, http.StatusBadRequest, "content is required")
+	if body.Content == "" && len(body.Images) == 0 {
+		writeErr(w, http.StatusBadRequest, "content or images are required")
 		return
 	}
-	msg, err := s.mgr.SendMessage(id, body.Content)
+	if len(body.Images) > maxImagesPerMessage {
+		writeErr(w, http.StatusBadRequest, "too many images")
+		return
+	}
+
+	images := make([]session.InboundImage, 0, len(body.Images))
+	for _, img := range body.Images {
+		if !allowedImageTypes[img.MediaType] {
+			writeErr(w, http.StatusBadRequest, "unsupported image type: "+img.MediaType)
+			return
+		}
+		data, derr := base64.StdEncoding.DecodeString(img.Data)
+		if derr != nil {
+			writeErr(w, http.StatusBadRequest, "invalid image data")
+			return
+		}
+		if len(data) == 0 || len(data) > maxImageBytes {
+			writeErr(w, http.StatusBadRequest, "image too large or empty")
+			return
+		}
+		name := strings.TrimSpace(img.Name)
+		if name == "" {
+			name = "image"
+		}
+		images = append(images, session.InboundImage{Name: name, MediaType: img.MediaType, Data: data})
+	}
+
+	msg, err := s.mgr.SendMessage(id, body.Content, images)
 	if err != nil {
 		writeErr(w, statusForErr(err), err.Error())
 		return
 	}
 	writeJSON(w, http.StatusAccepted, msg)
+}
+
+func (s *Server) handleGetAttachment(w http.ResponseWriter, r *http.Request) {
+	att, err := s.store.GetAttachment(chi.URLParam(r, "id"))
+	if err != nil {
+		writeErr(w, statusForErr(err), err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", att.MediaType)
+	// Bytes are immutable once stored, so allow aggressive client caching.
+	w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(att.Data)
 }
 
 func (s *Server) handleStopSession(w http.ResponseWriter, r *http.Request) {

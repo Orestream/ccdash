@@ -350,7 +350,88 @@ func (s *Store) ListMessages(sessionID string) ([]models.Message, error) {
 		m.CreatedAt = parseTime(created)
 		messages = append(messages, m)
 	}
-	return messages, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// Attach image metadata (no bytes) grouped by message.
+	byMessage, err := s.sessionAttachments(sessionID)
+	if err != nil {
+		return nil, err
+	}
+	for i := range messages {
+		if atts := byMessage[messages[i].ID]; len(atts) > 0 {
+			messages[i].Attachments = atts
+		}
+	}
+	return messages, nil
+}
+
+// --- Attachments ---
+
+// AddAttachment stores an image attached to a message and returns its metadata
+// (without the raw bytes).
+func (s *Store) AddAttachment(messageID, sessionID, name, mediaType string, data []byte) (models.Attachment, error) {
+	a := models.Attachment{
+		ID:        uuid.NewString(),
+		MessageID: messageID,
+		SessionID: sessionID,
+		Name:      name,
+		MediaType: mediaType,
+		CreatedAt: time.Now().UTC(),
+	}
+	_, err := s.db.Exec(
+		`INSERT INTO attachments (id, message_id, session_id, name, media_type, data, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		a.ID, a.MessageID, a.SessionID, a.Name, a.MediaType, data, a.CreatedAt.Format(time.RFC3339Nano),
+	)
+	if err != nil {
+		return models.Attachment{}, fmt.Errorf("insert attachment: %w", err)
+	}
+	return a, nil
+}
+
+// GetAttachment returns a single attachment including its raw bytes (for serving).
+func (s *Store) GetAttachment(id string) (models.Attachment, error) {
+	var a models.Attachment
+	var created string
+	err := s.db.QueryRow(
+		`SELECT id, message_id, session_id, name, media_type, data, created_at
+		 FROM attachments WHERE id = ?`, id,
+	).Scan(&a.ID, &a.MessageID, &a.SessionID, &a.Name, &a.MediaType, &a.Data, &created)
+	if errors.Is(err, sql.ErrNoRows) {
+		return models.Attachment{}, ErrNotFound
+	}
+	if err != nil {
+		return models.Attachment{}, fmt.Errorf("query attachment: %w", err)
+	}
+	a.CreatedAt = parseTime(created)
+	return a, nil
+}
+
+// sessionAttachments returns all attachment metadata (no bytes) for a session,
+// grouped by message id, in chronological order.
+func (s *Store) sessionAttachments(sessionID string) (map[string][]models.Attachment, error) {
+	rows, err := s.db.Query(
+		`SELECT id, message_id, session_id, name, media_type, created_at
+		 FROM attachments WHERE session_id = ? ORDER BY created_at ASC`, sessionID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query attachments: %w", err)
+	}
+	defer rows.Close()
+
+	byMessage := make(map[string][]models.Attachment)
+	for rows.Next() {
+		var a models.Attachment
+		var created string
+		if err := rows.Scan(&a.ID, &a.MessageID, &a.SessionID, &a.Name, &a.MediaType, &created); err != nil {
+			return nil, fmt.Errorf("scan attachment: %w", err)
+		}
+		a.CreatedAt = parseTime(created)
+		byMessage[a.MessageID] = append(byMessage[a.MessageID], a)
+	}
+	return byMessage, rows.Err()
 }
 
 // --- Usage ---

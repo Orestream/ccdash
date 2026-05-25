@@ -5,6 +5,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ApiError,
+  attachmentUrl,
   getSession,
   listMessages,
   listPermissions,
@@ -27,6 +28,12 @@ import { StatusBadge } from './StatusBadge';
 import { ModeSelector } from './ModeSelector';
 import { ApprovalMenu } from './ApprovalMenu';
 import { parseToolContent } from './toolContent';
+import {
+  imagesFromClipboard,
+  renumber,
+  toImageInput,
+  type PendingImage,
+} from './pastedImages';
 
 export interface SessionViewProps {
   sessionId: string;
@@ -47,6 +54,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
+  const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
   const [sending, setSending] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [permissions, setPermissions] = useState<PermissionRequest[]>([]);
@@ -77,6 +85,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
     setSession(null);
     setMessages([]);
     setPermissions([]);
+    setPendingImages([]);
     resetStream();
     Promise.all([
       getSession(sessionId, controller.signal),
@@ -199,15 +208,19 @@ export function SessionView({ sessionId }: SessionViewProps) {
 
   const submitDraft = useCallback(async () => {
     const content = draft.trim();
-    if (!content || sending) return;
+    // A message may be text-only, images-only, or both.
+    if ((!content && pendingImages.length === 0) || sending) return;
     setSending(true);
     setActionError(null);
     try {
-      const created = await sendMessage(sessionId, { content });
+      const images =
+        pendingImages.length > 0 ? toImageInput(pendingImages) : undefined;
+      const created = await sendMessage(sessionId, { content, images });
       setMessages((prev) =>
         prev.some((m) => m.id === created.id) ? prev : [...prev, created],
       );
       setDraft('');
+      setPendingImages([]);
       // Sending always re-engages the bottom snap so the user sees their turn.
       atBottomRef.current = true;
     } catch (err) {
@@ -219,7 +232,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
     } finally {
       setSending(false);
     }
-  }, [draft, sending, sessionId]);
+  }, [draft, pendingImages, sending, sessionId]);
 
   const handleSend = useCallback(
     (e: React.FormEvent) => {
@@ -239,6 +252,27 @@ export function SessionView({ sessionId }: SessionViewProps) {
     },
     [submitDraft],
   );
+
+  // Ctrl/Cmd+V of an image (or screenshot) attaches it as image-N.<ext>.
+  const handlePaste = useCallback((e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const files = imagesFromClipboard(e.clipboardData?.items);
+    if (files.length === 0) return;
+    e.preventDefault(); // keep the binary out of the text field
+    files.forEach((file) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const dataUrl = reader.result as string;
+        setPendingImages((prev) =>
+          renumber([...prev, { mediaType: file.type, dataUrl }]),
+        );
+      };
+      reader.readAsDataURL(file);
+    });
+  }, []);
+
+  const removePendingImage = useCallback((index: number) => {
+    setPendingImages((prev) => renumber(prev.filter((_, i) => i !== index)));
+  }, []);
 
   const handleStop = useCallback(async () => {
     setActionError(null);
@@ -419,7 +453,22 @@ export function SessionView({ sessionId }: SessionViewProps) {
             ) : (
               <div key={m.id} className={`message message-${m.role}`}>
                 <span className="message-role">{m.role}</span>
-                <div className="message-content">{m.content}</div>
+                {m.content && <div className="message-content">{m.content}</div>}
+                {m.attachments && m.attachments.length > 0 && (
+                  <div className="message-attachments">
+                    {m.attachments.map((a) => (
+                      <a
+                        key={a.id}
+                        href={attachmentUrl(a.id)}
+                        target="_blank"
+                        rel="noreferrer"
+                        title={a.name}
+                      >
+                        <img src={attachmentUrl(a.id)} alt={a.name} />
+                      </a>
+                    ))}
+                  </div>
+                )}
               </div>
             ),
           )}
@@ -458,17 +507,40 @@ export function SessionView({ sessionId }: SessionViewProps) {
         pendingId={decidingId}
       />
 
+      {pendingImages.length > 0 && (
+        <div className="pending-images" data-testid="pending-images">
+          {pendingImages.map((img, i) => (
+            <div key={i} className="pending-image">
+              <img src={img.dataUrl} alt={img.name} />
+              <span className="pending-image-name">{img.name}</span>
+              <button
+                type="button"
+                className="pending-image-remove"
+                aria-label={`Remove ${img.name}`}
+                onClick={() => removePendingImage(i)}
+              >
+                ×
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
       <form className="prompt" onSubmit={handleSend}>
         <textarea
           ref={textareaRef}
           aria-label="Prompt"
-          placeholder="Send a message…"
+          placeholder="Send a message…  (paste an image to attach)"
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={handleKeyDown}
+          onPaste={handlePaste}
           rows={1}
         />
-        <button type="submit" disabled={sending || !draft.trim()}>
+        <button
+          type="submit"
+          disabled={sending || (!draft.trim() && pendingImages.length === 0)}
+        >
           {sending ? 'Sending…' : 'Send'}
         </button>
       </form>

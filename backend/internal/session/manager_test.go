@@ -21,6 +21,7 @@ type fakeSession struct {
 
 	mu       sync.Mutex
 	sent     []string
+	sentImgs [][]claude.Image
 	responds []respondRec
 	setModes []string
 }
@@ -36,9 +37,10 @@ func newFakeSession() *fakeSession {
 	return &fakeSession{events: make(chan claude.Event, 32)}
 }
 
-func (f *fakeSession) Send(text string) error {
+func (f *fakeSession) Send(text string, images []claude.Image) error {
 	f.mu.Lock()
 	f.sent = append(f.sent, text)
+	f.sentImgs = append(f.sentImgs, images)
 	f.mu.Unlock()
 	return nil
 }
@@ -113,7 +115,7 @@ func TestSendMessageStreamingSuccess(t *testing.T) {
 	runner := &fakeRunner{sess: fs}
 	mgr, st, sess := setup(t, runner)
 
-	if _, err := mgr.SendMessage(sess.ID, "hello"); err != nil {
+	if _, err := mgr.SendMessage(sess.ID, "hello", nil); err != nil {
 		t.Fatalf("send: %v", err)
 	}
 	fs.emit(claude.Event{Kind: claude.KindSystem, ClaudeSessionID: "claude-xyz"})
@@ -151,7 +153,7 @@ func TestThinkingPersisted(t *testing.T) {
 	fs := newFakeSession()
 	mgr, st, sess := setup(t, &fakeRunner{sess: fs})
 
-	_, _ = mgr.SendMessage(sess.ID, "hi")
+	_, _ = mgr.SendMessage(sess.ID, "hi", nil)
 	fs.emit(claude.Event{Kind: claude.KindThinking, Text: "let me think"})
 	fs.emit(claude.Event{Kind: claude.KindAssistant, Text: "answer"})
 	fs.emit(claude.Event{Kind: claude.KindResult})
@@ -169,7 +171,7 @@ func TestPermissionAllowAlways(t *testing.T) {
 	fs := newFakeSession()
 	mgr, st, sess := setup(t, &fakeRunner{sess: fs})
 
-	_, _ = mgr.SendMessage(sess.ID, "do it")
+	_, _ = mgr.SendMessage(sess.ID, "do it", nil)
 	fs.emit(claude.Event{Kind: claude.KindPermission, RequestID: "req_1", ToolName: "Bash", ToolInput: json.RawMessage(`{"command":"ls"}`)})
 	waitForStatus(t, st, sess.ID, models.StatusAwaitingApproval)
 
@@ -208,7 +210,7 @@ func TestPermissionDeny(t *testing.T) {
 	fs := newFakeSession()
 	mgr, st, sess := setup(t, &fakeRunner{sess: fs})
 
-	_, _ = mgr.SendMessage(sess.ID, "do it")
+	_, _ = mgr.SendMessage(sess.ID, "do it", nil)
 	fs.emit(claude.Event{Kind: claude.KindPermission, RequestID: "req_1", ToolName: "Bash", ToolInput: json.RawMessage(`{"command":"rm -rf /"}`)})
 	waitForStatus(t, st, sess.ID, models.StatusAwaitingApproval)
 
@@ -227,7 +229,7 @@ func TestPermissionDeny(t *testing.T) {
 func TestRespondUnknownRequest(t *testing.T) {
 	fs := newFakeSession()
 	mgr, _, sess := setup(t, &fakeRunner{sess: fs})
-	_, _ = mgr.SendMessage(sess.ID, "x")
+	_, _ = mgr.SendMessage(sess.ID, "x", nil)
 	if err := mgr.RespondPermission(sess.ID, "ghost", true, false, ""); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
@@ -239,7 +241,7 @@ func TestSetModeUpdatesLiveSession(t *testing.T) {
 	fs := newFakeSession()
 	mgr, st, sess := setup(t, &fakeRunner{sess: fs})
 
-	_, _ = mgr.SendMessage(sess.ID, "x")
+	_, _ = mgr.SendMessage(sess.ID, "x", nil)
 	updated, err := mgr.SetMode(sess.ID, models.ModePlan)
 	if err != nil {
 		t.Fatalf("set mode: %v", err)
@@ -267,7 +269,7 @@ func TestStartError(t *testing.T) {
 	runner := &fakeRunner{startErr: errors.New("spawn failed")}
 	mgr, st, sess := setup(t, runner)
 
-	if _, err := mgr.SendMessage(sess.ID, "hi"); err != nil {
+	if _, err := mgr.SendMessage(sess.ID, "hi", nil); err != nil {
 		t.Fatalf("send returned err too early: %v", err)
 	}
 	mgr.Wait()
@@ -278,9 +280,42 @@ func TestStartError(t *testing.T) {
 
 func TestSendMessageUnknownSession(t *testing.T) {
 	mgr, _, _ := setup(t, &fakeRunner{sess: newFakeSession()})
-	if _, err := mgr.SendMessage("ghost", "hi"); !errors.Is(err, store.ErrNotFound) {
+	if _, err := mgr.SendMessage("ghost", "hi", nil); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
+}
+
+func TestSendMessageWithImages(t *testing.T) {
+	fs := newFakeSession()
+	mgr, st, sess := setup(t, &fakeRunner{sess: fs})
+
+	imgs := []InboundImage{
+		{Name: "image-1.png", MediaType: "image/png", Data: []byte{1, 2, 3}},
+		{Name: "image-2.png", MediaType: "image/png", Data: []byte{4, 5}},
+	}
+	msg, err := mgr.SendMessage(sess.ID, "see image-1 and image-2", imgs)
+	if err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	// Returned message carries persisted attachment metadata.
+	if len(msg.Attachments) != 2 || msg.Attachments[0].Name != "image-1.png" {
+		t.Fatalf("unexpected attachments on message: %+v", msg.Attachments)
+	}
+	// Persisted and re-hydrated by ListMessages.
+	msgs, _ := st.ListMessages(sess.ID)
+	if len(msgs[0].Attachments) != 2 {
+		t.Fatalf("attachments not persisted: %+v", msgs[0])
+	}
+	// Forwarded to the runner with bytes intact.
+	fs.mu.Lock()
+	sentImgs := fs.sentImgs
+	fs.mu.Unlock()
+	if len(sentImgs) != 1 || len(sentImgs[0]) != 2 || sentImgs[0][0].Name != "image-1.png" {
+		t.Fatalf("images not forwarded to runner: %+v", sentImgs)
+	}
+
+	fs.done()
+	mgr.Wait()
 }
 
 func TestSendMessageAutoNamesBlankSession(t *testing.T) {
@@ -288,7 +323,7 @@ func TestSendMessageAutoNamesBlankSession(t *testing.T) {
 	mgr, st, sess := setup(t, &fakeRunner{sess: fs})
 	blank, _ := st.CreateSession(sess.ProjectID, "", "claude-opus-4-7", models.ModeDefault)
 
-	if _, err := mgr.SendMessage(blank.ID, "Fix the login bug\nand other stuff"); err != nil {
+	if _, err := mgr.SendMessage(blank.ID, "Fix the login bug\nand other stuff", nil); err != nil {
 		t.Fatalf("send: %v", err)
 	}
 	if got, _ := st.GetSession(blank.ID); got.Title != "Fix the login bug" {
@@ -303,7 +338,7 @@ func TestSendMessageKeepsExistingTitle(t *testing.T) {
 	fs := newFakeSession()
 	mgr, st, sess := setup(t, &fakeRunner{sess: fs}) // sess title is "task"
 
-	if _, err := mgr.SendMessage(sess.ID, "a different prompt"); err != nil {
+	if _, err := mgr.SendMessage(sess.ID, "a different prompt", nil); err != nil {
 		t.Fatalf("send: %v", err)
 	}
 	if got, _ := st.GetSession(sess.ID); got.Title != "task" {

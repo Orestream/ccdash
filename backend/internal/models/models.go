@@ -94,11 +94,24 @@ type PermissionRequest struct {
 
 // Message is one entry in a session transcript.
 type Message struct {
+	ID          string       `json:"id"`
+	SessionID   string       `json:"sessionId"`
+	Role        string       `json:"role"`
+	Content     string       `json:"content"`
+	CreatedAt   time.Time    `json:"createdAt"`
+	Attachments []Attachment `json:"attachments,omitempty"`
+}
+
+// Attachment is an image the user pasted onto a message. The raw bytes are
+// served separately (GET /api/attachments/{id}); Data is never JSON-encoded.
+type Attachment struct {
 	ID        string    `json:"id"`
+	MessageID string    `json:"messageId"`
 	SessionID string    `json:"sessionId"`
-	Role      string    `json:"role"`
-	Content   string    `json:"content"`
+	Name      string    `json:"name"`
+	MediaType string    `json:"mediaType"`
 	CreatedAt time.Time `json:"createdAt"`
+	Data      []byte    `json:"-"`
 }
 
 // UsageRecord captures token/cost usage for a single claude run.

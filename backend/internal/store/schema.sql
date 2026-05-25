@@ -29,6 +29,19 @@ CREATE TABLE IF NOT EXISTS messages (
 
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
 
+CREATE TABLE IF NOT EXISTS attachments (
+    id         TEXT PRIMARY KEY,
+    message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    name       TEXT NOT NULL,
+    media_type TEXT NOT NULL,
+    data       BLOB NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_attachments_message ON attachments(message_id);
+CREATE INDEX IF NOT EXISTS idx_attachments_session ON attachments(session_id);
+
 CREATE TABLE IF NOT EXISTS usage_records (
     id            TEXT PRIMARY KEY,
     session_id    TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,

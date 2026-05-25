@@ -53,10 +53,18 @@ func New(s *store.Store, h *ws.Hub, r claude.Runner) *Manager {
 	return &Manager{store: s, hub: h, runner: r, live: make(map[string]*liveSession)}
 }
 
-// SendMessage persists the user message, ensures a live claude process exists,
-// forwards the turn, and flips the session to processing. Assistant output,
-// usage, and permission requests arrive asynchronously over the hub.
-func (m *Manager) SendMessage(sessionID, content string) (models.Message, error) {
+// InboundImage is a decoded image pasted onto a user turn.
+type InboundImage struct {
+	Name      string
+	MediaType string
+	Data      []byte
+}
+
+// SendMessage persists the user message (and any pasted images), ensures a live
+// claude process exists, forwards the turn, and flips the session to processing.
+// Assistant output, usage, and permission requests arrive asynchronously over
+// the hub.
+func (m *Manager) SendMessage(sessionID, content string, images []InboundImage) (models.Message, error) {
 	sess, err := m.store.GetSession(sessionID)
 	if err != nil {
 		return models.Message{}, err
@@ -65,6 +73,20 @@ func (m *Manager) SendMessage(sessionID, content string) (models.Message, error)
 	msg, err := m.store.AddMessage(sessionID, "user", content)
 	if err != nil {
 		return models.Message{}, err
+	}
+	// Persist pasted images as attachments and collect them for the runner.
+	var runnerImages []claude.Image
+	for _, img := range images {
+		att, aerr := m.store.AddAttachment(msg.ID, sessionID, img.Name, img.MediaType, img.Data)
+		if aerr != nil {
+			return models.Message{}, aerr
+		}
+		msg.Attachments = append(msg.Attachments, att)
+		runnerImages = append(runnerImages, claude.Image{
+			Name:      img.Name,
+			MediaType: img.MediaType,
+			Data:      img.Data,
+		})
 	}
 	m.hub.Broadcast("session.message", msg)
 
@@ -87,7 +109,7 @@ func (m *Manager) SendMessage(sessionID, content string) (models.Message, error)
 		m.fail(&sess, err)
 		return msg, nil
 	}
-	if err := ls.cs.Send(content); err != nil {
+	if err := ls.cs.Send(content, runnerImages); err != nil {
 		m.fail(&sess, err)
 		return msg, nil
 	}

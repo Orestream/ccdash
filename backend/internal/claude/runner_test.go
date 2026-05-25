@@ -1,6 +1,7 @@
 package claude
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"testing"
 )
@@ -102,6 +103,38 @@ func TestParseLineResultError(t *testing.T) {
 	ev := one(t, `{"type":"result","subtype":"error","is_error":true,"result":"boom"}`)
 	if ev.Kind != KindError || ev.Err == nil {
 		t.Fatalf("expected error event, got %+v", ev)
+	}
+}
+
+func TestUserMessageTextOnly(t *testing.T) {
+	m := userMessage("hello", nil)
+	msg := m["message"].(map[string]any)
+	if msg["content"] != "hello" {
+		t.Fatalf("expected plain string content, got %#v", msg["content"])
+	}
+}
+
+func TestUserMessageWithImages(t *testing.T) {
+	raw := []byte{0x89, 0x50, 0x4e, 0x47}
+	m := userMessage("look at image-1", []Image{
+		{Name: "image-1.png", MediaType: "image/png", Data: raw},
+	})
+	blocks, ok := m["message"].(map[string]any)["content"].([]map[string]any)
+	if !ok || len(blocks) != 3 {
+		t.Fatalf("expected 3 content blocks, got %#v", m["message"])
+	}
+	if blocks[0]["type"] != "text" || blocks[0]["text"] != "look at image-1" {
+		t.Fatalf("unexpected text block: %#v", blocks[0])
+	}
+	if blocks[1]["type"] != "text" || blocks[1]["text"] != "image-1.png" {
+		t.Fatalf("unexpected label block: %#v", blocks[1])
+	}
+	src := blocks[2]["source"].(map[string]any)
+	if blocks[2]["type"] != "image" || src["media_type"] != "image/png" {
+		t.Fatalf("unexpected image block: %#v", blocks[2])
+	}
+	if src["data"] != base64.StdEncoding.EncodeToString(raw) {
+		t.Fatalf("image data not base64-encoded: %v", src["data"])
 	}
 }
 

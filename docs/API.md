@@ -65,9 +65,21 @@ mirroring the claude CLI `--permission-mode`:
   "sessionId": "uuid",
   "role": "user | assistant | thinking | tool | system",
   "content": "text",
-  "createdAt": "2026-05-25T12:00:30Z"
+  "createdAt": "2026-05-25T12:00:30Z",
+  "attachments": [
+    {
+      "id": "uuid",
+      "messageId": "uuid",
+      "sessionId": "uuid",
+      "name": "image-1.png",
+      "mediaType": "image/png",
+      "createdAt": "2026-05-25T12:00:30Z"
+    }
+  ]
 }
 ```
+`attachments` is omitted when the message has no images. Bytes are served from
+`GET /api/attachments/{id}`.
 
 `thinking` messages carry the model's reasoning; `tool` messages carry a
 human-readable line about a tool the assistant used (e.g. `Bash: git status`).
@@ -126,13 +138,14 @@ live in backend memory for the life of the run (not persisted across restarts).
 | GET    | `/api/sessions` | — | `Session[]` (all sessions, newest first) |
 | GET    | `/api/sessions/{id}` | — | `Session` |
 | GET    | `/api/sessions/{id}/messages` | — | `Message[]` |
-| POST   | `/api/sessions/{id}/messages` | `{ "content" }` | `Message` (202; runs async, status flips to `processing`) |
+| POST   | `/api/sessions/{id}/messages` | `{ "content", "images?" }` | `Message` (202; runs async, status flips to `processing`) |
 | POST   | `/api/sessions/{id}/stop` | — | `Session` (cancels a running prompt) |
 | PATCH  | `/api/sessions/{id}/mode` | `{ "permissionMode" }` | `Session` (changes answering mode) |
 | PATCH  | `/api/sessions/{id}/title` | `{ "title" }` | `Session` (renames; non-empty title required) |
 | GET    | `/api/sessions/{id}/permissions` | — | `PermissionRequest[]` (currently pending) |
 | POST   | `/api/sessions/{id}/permissions/{requestId}` | `{ "decision": "allow"｜"allow_always"｜"deny", "message?" }` | `{ "ok": true }` |
 | GET    | `/api/sessions/{id}/usage` | — | `UsageRecord[]` |
+| GET    | `/api/attachments/{id}` | — | raw image bytes (`Content-Type` is the stored media type) |
 | GET    | `/api/usage` | — | `UsageSummary` |
 
 `decision` semantics: `allow` approves this one request; `allow_always` approves
@@ -143,6 +156,17 @@ Title auto-naming: a session created with a blank `title` is named from the
 first user message (its first non-empty line, truncated) when that message is
 sent. Once a title exists — whether auto-derived or set via `PATCH …/title` — it
 is never overwritten by later messages. Both paths broadcast `session.status`.
+
+Images: a message may carry pasted images. Each `images[]` item is
+`{ "name", "mediaType", "data" }` where `data` is base64 (no `data:` URL
+prefix), `mediaType` is one of `image/png|jpeg|gif|webp`, and `name` is the
+display/reference label (`image-1.png`, …). The content body may be empty when
+images are present. Images are forwarded to claude as inline vision blocks
+(each preceded by a text block with its name, so "in image-1 we see…" lines up)
+and persisted; the resulting `Message` includes an `attachments[]` array of
+`Attachment` metadata (`{ id, messageId, sessionId, name, mediaType, createdAt }`),
+whose bytes are fetched from `GET /api/attachments/{id}`. Limits: ≤ 8 images per
+message, ≤ 10 MiB each.
 
 ## WebSocket `/ws`
 

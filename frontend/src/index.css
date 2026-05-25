@@ -454,6 +454,71 @@ a {
   overflow-y: auto;
   max-height: 12rem;
 }
+
+/* Pasted-image chips above the composer (before send). */
+.pending-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+.pending-image {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.2rem;
+  padding: 0.35rem;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.pending-image img {
+  width: 64px;
+  height: 64px;
+  object-fit: cover;
+  border-radius: 4px;
+  display: block;
+}
+.pending-image-name {
+  font-size: 0.68rem;
+  color: var(--text-muted);
+  font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+}
+.pending-image-remove {
+  position: absolute;
+  top: -0.5rem;
+  right: -0.5rem;
+  width: 1.25rem;
+  height: 1.25rem;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 0.9rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.pending-image-remove:hover {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+/* Image thumbnails inside a sent message. */
+.message-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.4rem;
+}
+.message-attachments img {
+  max-width: 220px;
+  max-height: 220px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  display: block;
+}
 .prompt button {
   flex-shrink: 0;
 }

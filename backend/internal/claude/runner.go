@@ -21,6 +21,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -90,10 +91,18 @@ type Event struct {
 	Err error
 }
 
+// Image is an inline image attached to a user turn. Data is the raw decoded
+// bytes; the runner base64-encodes them into the stream-json content block.
+type Image struct {
+	Name      string
+	MediaType string
+	Data      []byte
+}
+
 // Session is a live claude process.
 type Session interface {
-	// Send queues a user turn.
-	Send(text string) error
+	// Send queues a user turn, optionally with inline images.
+	Send(text string, images []Image) error
 	// Respond answers a pending permission request. updatedInput should echo the
 	// tool's original input on allow; message is shown to claude on deny.
 	Respond(requestID string, decision Decision, updatedInput json.RawMessage, message string) error
@@ -188,14 +197,41 @@ type cliSession struct {
 
 func (s *cliSession) Events() <-chan Event { return s.events }
 
-func (s *cliSession) Send(text string) error {
-	return s.writeJSON(map[string]any{
-		"type": "user",
-		"message": map[string]any{
-			"role":    "user",
-			"content": text,
-		},
-	})
+func (s *cliSession) Send(text string, images []Image) error {
+	return s.writeJSON(userMessage(text, images))
+}
+
+// userMessage builds a stream-json user turn. With no images, content is a plain
+// string (the simple, common case). With images, content is an ordered block
+// array: the text, then for each image a small text label (its name, e.g.
+// "image-1.png") followed by the base64 image block — so the model can tie the
+// user's "in image-1 we see…" references to the right picture.
+func userMessage(text string, images []Image) map[string]any {
+	var content any = text
+	if len(images) > 0 {
+		blocks := make([]map[string]any, 0, len(images)*2+1)
+		if text != "" {
+			blocks = append(blocks, map[string]any{"type": "text", "text": text})
+		}
+		for _, img := range images {
+			if img.Name != "" {
+				blocks = append(blocks, map[string]any{"type": "text", "text": img.Name})
+			}
+			blocks = append(blocks, map[string]any{
+				"type": "image",
+				"source": map[string]any{
+					"type":       "base64",
+					"media_type": img.MediaType,
+					"data":       base64.StdEncoding.EncodeToString(img.Data),
+				},
+			})
+		}
+		content = blocks
+	}
+	return map[string]any{
+		"type":    "user",
+		"message": map[string]any{"role": "user", "content": content},
+	}
 }
 
 func (s *cliSession) Respond(requestID string, decision Decision, updatedInput json.RawMessage, message string) error {
