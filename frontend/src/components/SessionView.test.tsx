@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { SessionView } from './SessionView';
+import { parseToolContent } from './toolContent';
 import type { Message, PermissionRequest, Session } from '../types';
 import * as client from '../api/client';
 
@@ -86,5 +87,46 @@ describe('SessionView composer', () => {
     expect(textarea).not.toBeDisabled();
     fireEvent.change(textarea, { target: { value: 'queued' } });
     expect(textarea.value).toBe('queued');
+  });
+
+  it('renders a tool message as tool name + file basename', async () => {
+    const toolMsg: Message = {
+      id: 't1',
+      sessionId: 's1',
+      role: 'tool',
+      content: 'Edit: /home/robin/priv/ccdash/frontend/src/App.tsx',
+      createdAt: '2026-05-25T12:00:40Z',
+    };
+    vi.spyOn(client, 'listMessages').mockResolvedValue([toolMsg]);
+    render(<SessionView sessionId="s1" />);
+    expect(await screen.findByText('Edit')).toBeInTheDocument();
+    const detail = await screen.findByText('App.tsx');
+    expect(detail).toBeInTheDocument();
+    expect(detail).toHaveAttribute(
+      'title',
+      '/home/robin/priv/ccdash/frontend/src/App.tsx',
+    );
+  });
+});
+
+describe('parseToolContent', () => {
+  it('shows the basename for file tools', () => {
+    expect(parseToolContent('Read: /a/b/c.go')).toEqual({
+      name: 'Read',
+      detail: 'c.go',
+      full: '/a/b/c.go',
+    });
+  });
+
+  it('keeps the full detail for non-file tools', () => {
+    expect(parseToolContent('Bash: git status')).toEqual({
+      name: 'Bash',
+      detail: 'git status',
+      full: 'git status',
+    });
+  });
+
+  it('handles a bare tool name with no detail', () => {
+    expect(parseToolContent('Edit')).toEqual({ name: 'Edit', detail: '', full: '' });
   });
 });

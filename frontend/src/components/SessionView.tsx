@@ -25,6 +25,7 @@ import { useSessionStream } from '../hooks/useSessionStream';
 import { StatusBadge } from './StatusBadge';
 import { ModeSelector } from './ModeSelector';
 import { ApprovalMenu } from './ApprovalMenu';
+import { parseToolContent } from './toolContent';
 
 export interface SessionViewProps {
   sessionId: string;
@@ -35,6 +36,9 @@ const DELTA_KIND_LABEL: Record<string, string> = {
   tool: 'tool',
   text: 'assistant',
 };
+
+// How close to the bottom (px) still counts as "stuck to the bottom".
+const SCROLL_SNAP_THRESHOLD = 48;
 
 export function SessionView({ sessionId }: SessionViewProps) {
   const [session, setSession] = useState<Session | null>(null);
@@ -50,6 +54,12 @@ export function SessionView({ sessionId }: SessionViewProps) {
   const { subscribe, status: wsStatus } = useWebSocket();
   const { segments, pushDelta, reset: resetStream } = useSessionStream(sessionId);
   const transcriptRef = useRef<HTMLDivElement | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  // Whether the transcript is pinned to the bottom (auto-follow new messages).
+  // Mirrored in a ref so the message-arrival effect reads the latest value
+  // without re-subscribing.
+  const atBottomRef = useRef(true);
+  const [showScrollButton, setShowScrollButton] = useState(false);
 
   // Initial load (session + messages). Permissions are loaded by the recovery
   // effect below (also runs on WS reconnect).
@@ -141,11 +151,44 @@ export function SessionView({ sessionId }: SessionViewProps) {
     });
   }, [subscribe, sessionId, pushDelta, resetStream]);
 
-  // Autoscroll on new messages / live segments.
-  useEffect(() => {
+  const scrollToBottom = useCallback(() => {
     const el = transcriptRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [messages, segments]);
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+    atBottomRef.current = true;
+    setShowScrollButton(false);
+  }, []);
+
+  // Release / re-engage the bottom snap as the user scrolls.
+  const handleScroll = useCallback(() => {
+    const el = transcriptRef.current;
+    if (!el) return;
+    const atBottom =
+      el.scrollHeight - el.scrollTop - el.clientHeight <= SCROLL_SNAP_THRESHOLD;
+    atBottomRef.current = atBottom;
+    setShowScrollButton(!atBottom);
+  }, []);
+
+  // Follow new messages / live segments only while snapped to the bottom; when
+  // the user has scrolled up, surface the jump-to-bottom button instead.
+  useEffect(() => {
+    if (atBottomRef.current) {
+      scrollToBottom();
+    } else {
+      setShowScrollButton(true);
+    }
+  }, [messages, segments, scrollToBottom]);
+
+  // Grow the composer from a single line as text wraps (capped via CSS max-height).
+  // With border-box, scrollHeight omits the border, so add it back to avoid a
+  // perpetual 1px scrollbar.
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    const border = el.offsetHeight - el.clientHeight;
+    el.style.height = `${el.scrollHeight + border}px`;
+  }, [draft]);
 
   const submitDraft = useCallback(async () => {
     const content = draft.trim();
@@ -158,6 +201,8 @@ export function SessionView({ sessionId }: SessionViewProps) {
         prev.some((m) => m.id === created.id) ? prev : [...prev, created],
       );
       setDraft('');
+      // Sending always re-engages the bottom snap so the user sees their turn.
+      atBottomRef.current = true;
     } catch (err) {
       const msg =
         err instanceof ApiError || err instanceof Error
@@ -290,30 +335,47 @@ export function SessionView({ sessionId }: SessionViewProps) {
         </p>
       )}
 
-      <div className="transcript" ref={transcriptRef}>
-        {messages.length === 0 && segments.length === 0 && (
-          <p className="muted">No messages yet.</p>
-        )}
-        {messages.map((m) => (
-          <div key={m.id} className={`message message-${m.role}`}>
-            <span className="message-role">{m.role}</span>
-            <div className="message-content">{m.content}</div>
-          </div>
-        ))}
-        {isProcessing && segments.length > 0 && (
-          <div className="message message-live" data-testid="live-bubble">
-            <span className="message-role">assistant</span>
-            {segments.map((seg, i) => (
-              <div
-                key={i}
-                className={`live-segment live-${seg.kind}`}
-                data-kind={seg.kind}
-                aria-label={DELTA_KIND_LABEL[seg.kind] ?? seg.kind}
-              >
-                {seg.kind === 'tool' ? `⚙ ${seg.text}` : seg.text}
+      <div className="transcript-wrap">
+        <div className="transcript" ref={transcriptRef} onScroll={handleScroll}>
+          {messages.length === 0 && segments.length === 0 && (
+            <p className="muted">No messages yet.</p>
+          )}
+          {messages.map((m) =>
+            m.role === 'tool' ? (
+              <ToolMessage key={m.id} content={m.content} />
+            ) : (
+              <div key={m.id} className={`message message-${m.role}`}>
+                <span className="message-role">{m.role}</span>
+                <div className="message-content">{m.content}</div>
               </div>
-            ))}
-          </div>
+            ),
+          )}
+          {isProcessing && segments.length > 0 && (
+            <div className="message message-live" data-testid="live-bubble">
+              <span className="message-role">assistant</span>
+              {segments.map((seg, i) => (
+                <div
+                  key={i}
+                  className={`live-segment live-${seg.kind}`}
+                  data-kind={seg.kind}
+                  aria-label={DELTA_KIND_LABEL[seg.kind] ?? seg.kind}
+                >
+                  {seg.kind === 'tool' ? `⚙ ${seg.text}` : seg.text}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+        {showScrollButton && (
+          <button
+            type="button"
+            className="scroll-to-bottom"
+            aria-label="Scroll to latest"
+            title="Scroll to latest"
+            onClick={scrollToBottom}
+          >
+            ↓
+          </button>
         )}
       </div>
 
@@ -325,12 +387,13 @@ export function SessionView({ sessionId }: SessionViewProps) {
 
       <form className="prompt" onSubmit={handleSend}>
         <textarea
+          ref={textareaRef}
           aria-label="Prompt"
           placeholder="Send a message…"
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={handleKeyDown}
-          rows={3}
+          rows={1}
         />
         <button type="submit" disabled={sending || !draft.trim()}>
           {sending ? 'Sending…' : 'Send'}
@@ -344,6 +407,24 @@ export function SessionView({ sessionId }: SessionViewProps) {
         </p>
       )}
     </section>
+  );
+}
+
+// ToolMessage renders a `tool` transcript entry as "<Tool> <detail>", where the
+// detail (file basename or command) sits to the right in a smaller mono font.
+function ToolMessage({ content }: { content: string }) {
+  const { name, detail, full } = parseToolContent(content);
+  return (
+    <div className="message message-tool">
+      <div className="tool-header">
+        <span className="message-role tool-name">{name}</span>
+        {detail && (
+          <span className="tool-detail" title={full}>
+            {detail}
+          </span>
+        )}
+      </div>
+    </div>
   );
 }
 

@@ -261,6 +261,7 @@ func (m *Manager) pump(ls *liveSession) {
 			m.hub.Broadcast("session.delta", delta(ls.id, "thinking", ev.Text))
 
 		case claude.KindToolUse:
+			m.flushThinking(ls)
 			line := summarize(ev.ToolName, ev.ToolInput)
 			if msg, aerr := m.store.AddMessage(ls.id, "tool", line); aerr == nil {
 				m.hub.Broadcast("session.message", msg)

@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"strings"
 	"sync"
 )
 
@@ -254,7 +255,7 @@ func (s *cliSession) readLoop(stdout io.Reader) {
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
 	for scanner.Scan() {
-		if ev, ok := parseLine(scanner.Bytes()); ok {
+		for _, ev := range parseLine(scanner.Bytes()) {
 			s.events <- ev
 		}
 	}
@@ -276,8 +277,10 @@ type rawUsage struct {
 }
 
 type rawContent struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
+	Type  string          `json:"type"`
+	Text  string          `json:"text"`
+	Name  string          `json:"name"`
+	Input json.RawMessage `json:"input"`
 }
 
 type rawDelta struct {
@@ -325,94 +328,115 @@ type rawEvent struct {
 	IsError      bool            `json:"is_error"`
 }
 
-// parseLine converts one stream-json line into an Event. The bool is false for
-// lines that carry no event we surface (blank lines, replayed user turns, etc.).
-func parseLine(line []byte) (Event, bool) {
+// parseLine converts one stream-json line into zero or more Events. Most lines
+// yield a single event; a finalized assistant message may yield several (text
+// and tool_use blocks, in order). Blank lines, replayed user turns and anything
+// we don't surface yield nil.
+func parseLine(line []byte) []Event {
 	line = bytes.TrimSpace(line)
 	if len(line) == 0 {
-		return Event{}, false
+		return nil
 	}
 	var raw rawEvent
 	if err := json.Unmarshal(line, &raw); err != nil {
-		return Event{}, false
+		return nil
 	}
 
 	switch raw.Type {
 	case "system":
-		return Event{Kind: KindSystem, ClaudeSessionID: raw.SessionID, Model: raw.Model}, true
+		return []Event{{Kind: KindSystem, ClaudeSessionID: raw.SessionID, Model: raw.Model}}
 
 	case "stream_event":
 		return parseStreamEvent(raw)
 
 	case "assistant":
-		if raw.Message == nil {
-			return Event{}, false
-		}
-		var text string
-		for _, c := range raw.Message.Content {
-			if c.Type == "text" {
-				text += c.Text
-			}
-		}
-		if text == "" {
-			return Event{}, false
-		}
-		return Event{Kind: KindAssistant, Text: text, Model: raw.Message.Model, ClaudeSessionID: raw.SessionID}, true
+		return parseAssistant(raw)
 
 	case "control_request":
 		if raw.Request == nil || raw.Request.Subtype != "can_use_tool" {
-			return Event{}, false
+			return nil
 		}
-		return Event{
+		return []Event{{
 			Kind:        KindPermission,
 			RequestID:   raw.RequestID,
 			ToolName:    raw.Request.ToolName,
 			ToolInput:   raw.Request.Input,
 			Suggestions: raw.Request.Suggestions,
-		}, true
+		}}
 
 	case "result":
 		if raw.IsError {
-			return Event{Kind: KindError, Err: fmt.Errorf("claude result error: %s", raw.Result)}, true
+			return []Event{{Kind: KindError, Err: fmt.Errorf("claude result error: %s", raw.Result)}}
 		}
 		ev := Event{Kind: KindResult, Text: raw.Result, ClaudeSessionID: raw.SessionID, Model: raw.Model, CostUSD: raw.TotalCostUSD}
 		if raw.Usage != nil {
 			ev.InputTokens = raw.Usage.InputTokens
 			ev.OutputTokens = raw.Usage.OutputTokens
 		}
-		return ev, true
+		return []Event{ev}
 
 	default:
-		return Event{}, false
+		return nil
 	}
 }
 
-func parseStreamEvent(raw rawEvent) (Event, bool) {
-	if raw.Event == nil {
-		return Event{}, false
+// parseAssistant expands a finalized assistant message into ordered events. Text
+// blocks coalesce into assistant events; tool_use blocks become tool events that
+// carry the *complete* input — unlike the streamed content_block_start, whose
+// input is still empty mid-stream. This is why tool messages are sourced here
+// rather than from the partial stream.
+func parseAssistant(raw rawEvent) []Event {
+	if raw.Message == nil {
+		return nil
 	}
-	switch raw.Event.Type {
-	case "content_block_delta":
+	var events []Event
+	var text strings.Builder
+	flush := func() {
+		if text.Len() == 0 {
+			return
+		}
+		events = append(events, Event{
+			Kind:            KindAssistant,
+			Text:            text.String(),
+			Model:           raw.Message.Model,
+			ClaudeSessionID: raw.SessionID,
+		})
+		text.Reset()
+	}
+	for _, c := range raw.Message.Content {
+		switch c.Type {
+		case "text":
+			text.WriteString(c.Text)
+		case "tool_use":
+			flush()
+			events = append(events, Event{
+				Kind:      KindToolUse,
+				ToolName:  c.Name,
+				ToolInput: c.Input,
+			})
+		}
+	}
+	flush()
+	return events
+}
+
+func parseStreamEvent(raw rawEvent) []Event {
+	if raw.Event == nil {
+		return nil
+	}
+	if raw.Event.Type == "content_block_delta" {
 		switch raw.Event.Delta.Type {
 		case "text_delta":
 			if raw.Event.Delta.Text == "" {
-				return Event{}, false
+				return nil
 			}
-			return Event{Kind: KindText, Text: raw.Event.Delta.Text}, true
+			return []Event{{Kind: KindText, Text: raw.Event.Delta.Text}}
 		case "thinking_delta":
 			if raw.Event.Delta.Thinking == "" {
-				return Event{}, false
+				return nil
 			}
-			return Event{Kind: KindThinking, Text: raw.Event.Delta.Thinking}, true
-		}
-	case "content_block_start":
-		if raw.Event.ContentBlock.Type == "tool_use" {
-			return Event{
-				Kind:      KindToolUse,
-				ToolName:  raw.Event.ContentBlock.Name,
-				ToolInput: raw.Event.ContentBlock.Input,
-			}, true
+			return []Event{{Kind: KindThinking, Text: raw.Event.Delta.Thinking}}
 		}
 	}
-	return Event{}, false
+	return nil
 }

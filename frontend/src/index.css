@@ -339,6 +339,12 @@ a {
   align-items: center;
   gap: 0.75rem;
 }
+.transcript-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
 .transcript {
   flex: 1;
   overflow-y: auto;
@@ -350,6 +356,27 @@ a {
   flex-direction: column;
   gap: 0.75rem;
   min-height: 200px;
+}
+/* Jump-to-latest button: shown when the user has scrolled up off the bottom. */
+.scroll-to-bottom {
+  position: absolute;
+  right: 0.85rem;
+  bottom: 0.85rem;
+  width: 2.1rem;
+  height: 2.1rem;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: var(--bg-elev-2);
+  color: var(--text);
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgb(0 0 0 / 35%);
+}
+.scroll-to-bottom:hover {
+  border-color: var(--accent);
+  color: var(--accent);
 }
 .message {
   border-radius: var(--radius);
@@ -378,6 +405,26 @@ a {
 .message-tool {
   border-left: 3px solid var(--text-muted);
 }
+/* Tool entries: prominent tool name + smaller mono detail (file / command). */
+.tool-header {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  min-width: 0;
+}
+.tool-header .tool-name {
+  margin-bottom: 0;
+  color: var(--text);
+  flex-shrink: 0;
+}
+.tool-detail {
+  font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 0.76rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .prompt {
   margin-top: 0.75rem;
   display: flex;
@@ -385,7 +432,9 @@ a {
   align-items: flex-end;
 }
 .prompt textarea {
-  resize: vertical;
+  resize: none;
+  overflow-y: auto;
+  max-height: 12rem;
 }
 .prompt button {
   flex-shrink: 0;
