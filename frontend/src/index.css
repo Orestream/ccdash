@@ -242,6 +242,24 @@ a {
   font-size: 1.3rem;
   margin: 0;
 }
+/* Click-to-rename session title. */
+.session-heading {
+  cursor: text;
+  border-radius: 4px;
+  padding: 0 0.2rem;
+  margin: 0 -0.2rem;
+}
+.session-heading:hover {
+  background: var(--bg-elev-2);
+}
+.title-edit {
+  font: inherit;
+  font-size: 1.3rem;
+  font-weight: 700;
+  width: 100%;
+  min-width: 16rem;
+  padding: 0 0.2rem;
+}
 
 /* Session list */
 .rows {

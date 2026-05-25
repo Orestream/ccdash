@@ -129,6 +129,7 @@ live in backend memory for the life of the run (not persisted across restarts).
 | POST   | `/api/sessions/{id}/messages` | `{ "content" }` | `Message` (202; runs async, status flips to `processing`) |
 | POST   | `/api/sessions/{id}/stop` | — | `Session` (cancels a running prompt) |
 | PATCH  | `/api/sessions/{id}/mode` | `{ "permissionMode" }` | `Session` (changes answering mode) |
+| PATCH  | `/api/sessions/{id}/title` | `{ "title" }` | `Session` (renames; non-empty title required) |
 | GET    | `/api/sessions/{id}/permissions` | — | `PermissionRequest[]` (currently pending) |
 | POST   | `/api/sessions/{id}/permissions/{requestId}` | `{ "decision": "allow"｜"allow_always"｜"deny", "message?" }` | `{ "ok": true }` |
 | GET    | `/api/sessions/{id}/usage` | — | `UsageRecord[]` |
@@ -137,6 +138,11 @@ live in backend memory for the life of the run (not persisted across restarts).
 `decision` semantics: `allow` approves this one request; `allow_always` approves
 it and auto-approves further requests for the same tool in this session;
 `deny` rejects it (optional `message` is shown to claude).
+
+Title auto-naming: a session created with a blank `title` is named from the
+first user message (its first non-empty line, truncated) when that message is
+sent. Once a title exists — whether auto-derived or set via `PATCH …/title` — it
+is never overwritten by later messages. Both paths broadcast `session.status`.
 
 ## WebSocket `/ws`
 

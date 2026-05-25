@@ -280,6 +280,22 @@ func (s *Store) UpdateSessionMode(id string, mode models.PermissionMode) error {
 	return nil
 }
 
+// UpdateSessionTitle sets a session's display title and bumps updated_at.
+func (s *Store) UpdateSessionTitle(id, title string) error {
+	res, err := s.db.Exec(
+		`UPDATE sessions SET title = ?, updated_at = ? WHERE id = ?`,
+		title, nowStr(), id,
+	)
+	if err != nil {
+		return fmt.Errorf("update session title: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // UpdateSessionClaudeID records the claude-side session id once known.
 func (s *Store) UpdateSessionClaudeID(id, claudeID string) error {
 	_, err := s.db.Exec(

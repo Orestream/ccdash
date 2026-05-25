@@ -192,6 +192,26 @@ func TestSetMode(t *testing.T) {
 	}
 }
 
+func TestRenameSession(t *testing.T) {
+	h := newTestServer(t)
+	sess := createSessionForTest(t, h, map[string]string{"title": "old"})
+
+	rec := do(t, h, http.MethodPatch, "/api/sessions/"+sess.ID+"/title", map[string]string{"title": "Renamed"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("rename status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var updated models.Session
+	_ = json.Unmarshal(rec.Body.Bytes(), &updated)
+	if updated.Title != "Renamed" {
+		t.Fatalf("expected title 'Renamed', got %q", updated.Title)
+	}
+
+	rec = do(t, h, http.MethodPatch, "/api/sessions/"+sess.ID+"/title", map[string]string{"title": "  "})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for blank title, got %d", rec.Code)
+	}
+}
+
 func TestListPermissionsEmpty(t *testing.T) {
 	h := newTestServer(t)
 	sess := createSessionForTest(t, h, map[string]string{"title": "t"})

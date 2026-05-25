@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -77,6 +78,7 @@ func (s *Server) Router() http.Handler {
 			r.Post("/{id}/messages", s.handleSendMessage)
 			r.Post("/{id}/stop", s.handleStopSession)
 			r.Patch("/{id}/mode", s.handleSetMode)
+			r.Patch("/{id}/title", s.handleRenameSession)
 			r.Get("/{id}/permissions", s.handleListPermissions)
 			r.Post("/{id}/permissions/{requestId}", s.handleRespondPermission)
 			r.Get("/{id}/usage", s.handleSessionUsage)
@@ -298,6 +300,26 @@ func (s *Server) handleSetMode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sess, err := s.mgr.SetMode(id, body.PermissionMode)
+	if err != nil {
+		writeErr(w, statusForErr(err), err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, sess)
+}
+
+func (s *Server) handleRenameSession(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	var body struct {
+		Title string `json:"title"`
+	}
+	if !decode(w, r, &body) {
+		return
+	}
+	if strings.TrimSpace(body.Title) == "" {
+		writeErr(w, http.StatusBadRequest, "title is required")
+		return
+	}
+	sess, err := s.mgr.Rename(id, body.Title)
 	if err != nil {
 		writeErr(w, statusForErr(err), err.Error())
 		return

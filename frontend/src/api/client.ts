@@ -158,6 +158,13 @@ export function setSessionMode(
   });
 }
 
+export function renameSession(sessionId: string, title: string): Promise<Session> {
+  return request<Session>(`/sessions/${encodeURIComponent(sessionId)}/title`, {
+    method: 'PATCH',
+    body: { title },
+  });
+}
+
 // --- Permissions ---
 export function listPermissions(
   sessionId: string,

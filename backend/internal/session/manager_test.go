@@ -282,3 +282,68 @@ func TestSendMessageUnknownSession(t *testing.T) {
 		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
 }
+
+func TestSendMessageAutoNamesBlankSession(t *testing.T) {
+	fs := newFakeSession()
+	mgr, st, sess := setup(t, &fakeRunner{sess: fs})
+	blank, _ := st.CreateSession(sess.ProjectID, "", "claude-opus-4-7", models.ModeDefault)
+
+	if _, err := mgr.SendMessage(blank.ID, "Fix the login bug\nand other stuff"); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	if got, _ := st.GetSession(blank.ID); got.Title != "Fix the login bug" {
+		t.Fatalf("expected auto-name from first line, got %q", got.Title)
+	}
+
+	fs.done()
+	mgr.Wait()
+}
+
+func TestSendMessageKeepsExistingTitle(t *testing.T) {
+	fs := newFakeSession()
+	mgr, st, sess := setup(t, &fakeRunner{sess: fs}) // sess title is "task"
+
+	if _, err := mgr.SendMessage(sess.ID, "a different prompt"); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	if got, _ := st.GetSession(sess.ID); got.Title != "task" {
+		t.Fatalf("titled session should not be auto-renamed, got %q", got.Title)
+	}
+
+	fs.done()
+	mgr.Wait()
+}
+
+func TestRenameTrimsAndPersists(t *testing.T) {
+	mgr, st, sess := setup(t, &fakeRunner{sess: newFakeSession()})
+
+	updated, err := mgr.Rename(sess.ID, "  New name  ")
+	if err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+	if updated.Title != "New name" {
+		t.Fatalf("expected trimmed title, got %q", updated.Title)
+	}
+	if got, _ := st.GetSession(sess.ID); got.Title != "New name" {
+		t.Fatalf("rename not persisted, got %q", got.Title)
+	}
+}
+
+func TestTitleFromMessage(t *testing.T) {
+	long := ""
+	for i := 0; i < 100; i++ {
+		long += "a"
+	}
+	cases := map[string]string{
+		"":                    "",
+		"   \n\t ":            "",
+		"hello":               "hello",
+		"  first \n second  ": "first",
+		long:                  long[:60] + "…",
+	}
+	for in, want := range cases {
+		if got := titleFromMessage(in); got != want {
+			t.Fatalf("titleFromMessage(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

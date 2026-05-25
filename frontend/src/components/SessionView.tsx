@@ -8,6 +8,7 @@ import {
   getSession,
   listMessages,
   listPermissions,
+  renameSession,
   respondPermission,
   sendMessage,
   setSessionMode,
@@ -51,6 +52,9 @@ export function SessionView({ sessionId }: SessionViewProps) {
   const [permissions, setPermissions] = useState<PermissionRequest[]>([]);
   const [decidingId, setDecidingId] = useState<string | null>(null);
   const [modeBusy, setModeBusy] = useState(false);
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [titleDraft, setTitleDraft] = useState('');
+  const [renaming, setRenaming] = useState(false);
   const { subscribe, status: wsStatus } = useWebSocket();
   const { segments, pushDelta, reset: resetStream } = useSessionStream(sessionId);
   const transcriptRef = useRef<HTMLDivElement | null>(null);
@@ -60,6 +64,9 @@ export function SessionView({ sessionId }: SessionViewProps) {
   // without re-subscribing.
   const atBottomRef = useRef(true);
   const [showScrollButton, setShowScrollButton] = useState(false);
+  // Guards the title editor's exit so Enter/Escape and the unmount blur don't
+  // double-fire (see finishEditTitle).
+  const editingRef = useRef(false);
 
   // Initial load (session + messages). Permissions are loaded by the recovery
   // effect below (also runs on WS reconnect).
@@ -267,6 +274,53 @@ export function SessionView({ sessionId }: SessionViewProps) {
     [sessionId],
   );
 
+  const beginEditTitle = useCallback(() => {
+    editingRef.current = true;
+    setTitleDraft(session?.title ?? '');
+    setEditingTitle(true);
+  }, [session?.title]);
+
+  // Single exit path for the editor. The ref guard makes Enter/Escape and the
+  // follow-up blur (fired as the input unmounts) idempotent: only the first
+  // call wins, so we never double-save or save a cancelled edit.
+  const finishEditTitle = useCallback(
+    async (commit: boolean) => {
+      if (!editingRef.current) return;
+      editingRef.current = false;
+      setEditingTitle(false);
+      const next = titleDraft.trim();
+      if (!commit || !next || next === (session?.title ?? '')) return;
+      setRenaming(true);
+      setActionError(null);
+      try {
+        const updated = await renameSession(sessionId, next);
+        setSession((prev) => ({ ...prev, ...updated }));
+      } catch (err) {
+        const msg =
+          err instanceof ApiError || err instanceof Error
+            ? err.message
+            : 'failed to rename session';
+        setActionError(msg);
+      } finally {
+        setRenaming(false);
+      }
+    },
+    [titleDraft, session?.title, sessionId],
+  );
+
+  const handleTitleKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLInputElement>) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        void finishEditTitle(true);
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        void finishEditTitle(false);
+      }
+    },
+    [finishEditTitle],
+  );
+
   const handleDecide = useCallback(
     async (requestId: string, decision: PermissionDecision) => {
       setActionError(null);
@@ -306,7 +360,26 @@ export function SessionView({ sessionId }: SessionViewProps) {
     <section className="session-view">
       <header className="panel-header">
         <div>
-          <h1>{session?.title || 'Session'}</h1>
+          {editingTitle ? (
+            <input
+              className="title-edit"
+              aria-label="Session title"
+              value={titleDraft}
+              autoFocus
+              disabled={renaming}
+              onChange={(e) => setTitleDraft(e.target.value)}
+              onKeyDown={handleTitleKeyDown}
+              onBlur={() => void finishEditTitle(true)}
+            />
+          ) : (
+            <h1
+              className="session-heading"
+              title="Click to rename"
+              onClick={beginEditTitle}
+            >
+              {session?.title || 'Session'}
+            </h1>
+          )}
           {session && <p className="muted">{session.model}</p>}
         </div>
         <div className="session-actions">

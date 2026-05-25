@@ -89,6 +89,31 @@ describe('SessionView composer', () => {
     expect(textarea.value).toBe('queued');
   });
 
+  it('renames the session via the title and persists on Enter', async () => {
+    const renamed = { ...session, title: 'My new name' };
+    const spy = vi.spyOn(client, 'renameSession').mockResolvedValue(renamed);
+    render(<SessionView sessionId="s1" />);
+
+    const heading = await screen.findByText('Add auth');
+    fireEvent.click(heading);
+    const input = (await screen.findByLabelText('Session title')) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: 'My new name' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+
+    await waitFor(() => expect(spy).toHaveBeenCalledWith('s1', 'My new name'));
+    await waitFor(() => expect(screen.getByText('My new name')).toBeInTheDocument());
+  });
+
+  it('does not call rename when the title is unchanged', async () => {
+    const spy = vi.spyOn(client, 'renameSession');
+    render(<SessionView sessionId="s1" />);
+    const heading = await screen.findByText('Add auth');
+    fireEvent.click(heading);
+    const input = await screen.findByLabelText('Session title');
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(spy).not.toHaveBeenCalled();
+  });
+
   it('renders a tool message as tool name + file basename', async () => {
     const toolMsg: Message = {
       id: 't1',

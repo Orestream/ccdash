@@ -68,6 +68,20 @@ func (m *Manager) SendMessage(sessionID, content string) (models.Message, error)
 	}
 	m.hub.Broadcast("session.message", msg)
 
+	// Auto-name from the first user message. This only fires while the title is
+	// still blank, so a manual rename (which sets a non-empty title) is never
+	// clobbered by later turns.
+	if strings.TrimSpace(sess.Title) == "" {
+		if title := titleFromMessage(content); title != "" {
+			if uerr := m.store.UpdateSessionTitle(sessionID, title); uerr == nil {
+				if updated, gerr := m.store.GetSession(sessionID); gerr == nil {
+					sess = updated
+					m.hub.Broadcast("session.status", updated)
+				}
+			}
+		}
+	}
+
 	ls, err := m.ensureLive(sess)
 	if err != nil {
 		m.fail(&sess, err)
@@ -162,6 +176,20 @@ func (m *Manager) SetMode(sessionID string, mode models.PermissionMode) (models.
 	m.mu.Unlock()
 	if ls != nil {
 		_ = ls.cs.SetMode(mode.CLIPermissionMode())
+	}
+	sess, err := m.store.GetSession(sessionID)
+	if err != nil {
+		return models.Session{}, err
+	}
+	m.hub.Broadcast("session.status", sess)
+	return sess, nil
+}
+
+// Rename sets a session's title explicitly (manual rename). The title is
+// trimmed; callers should reject empty titles before reaching here.
+func (m *Manager) Rename(sessionID, title string) (models.Session, error) {
+	if err := m.store.UpdateSessionTitle(sessionID, strings.TrimSpace(title)); err != nil {
+		return models.Session{}, err
 	}
 	sess, err := m.store.GetSession(sessionID)
 	if err != nil {
@@ -398,4 +426,21 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "…"
+}
+
+// titleFromMessage derives a session title from a user message: its first
+// non-empty line, rune-safely truncated. Returns "" if there is no text.
+func titleFromMessage(content string) string {
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		r := []rune(line)
+		if len(r) > 60 {
+			return string(r[:60]) + "…"
+		}
+		return line
+	}
+	return ""
 }
