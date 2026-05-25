@@ -1,0 +1,26 @@
+# --- Backend (Go) ---
+/backend/ccdash
+/backend/*.db
+/backend/*.db-shm
+/backend/*.db-wal
+*.test
+*.out
+coverage.txt
+
+# --- Frontend (Node) ---
+node_modules/
+/frontend/dist/
+*.tsbuildinfo
+.vite/
+
+# --- Claude / local ---
+.claude/settings.local.json
+.claude/auto-commit.log
+
+# --- Editors / OS ---
+.DS_Store
+.idea/
+.vscode/
+*.swp
+.env
+.env.local
