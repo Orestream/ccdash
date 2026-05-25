@@ -1,0 +1,10 @@
+# Normalize line endings to LF on checkin.
+* text=auto eol=lf
+
+# Treat lockfiles and generated bundles as such in diffs.
+frontend/package-lock.json linguist-generated=true
+backend/go.sum             linguist-generated=true
+
+# Binary files (none yet, but keep the section for clarity).
+*.png binary
+*.jpg binary
