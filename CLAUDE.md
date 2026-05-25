@@ -26,8 +26,8 @@ docs/                   API.md (the contract), ARCHITECTURE.md
 
 ## Ports
 
-- Backend API: **:8080** (`CCDASH_ADDR` to override)
-- Frontend dev server: **:10000** (proxies `/api` and `/ws` → :8080)
+- Backend API: **:10001** (`CCDASH_ADDR` to override)
+- Frontend dev server: **:10000** (proxies `/api` and `/ws` → :10001)
 
 ## Commands
 

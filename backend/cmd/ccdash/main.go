@@ -23,7 +23,7 @@ import (
 var version = "0.1.0-dev"
 
 func main() {
-	addr := envOr("CCDASH_ADDR", ":8080")
+	addr := envOr("CCDASH_ADDR", ":10001")
 	dbPath := envOr("CCDASH_DB", "ccdash.db")
 	claudeBin := envOr("CCDASH_CLAUDE_BIN", "claude")
 

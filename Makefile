@@ -15,7 +15,7 @@ setup: ## Install all dependencies
 	cd $(BACKEND) && go mod download
 	cd $(FRONTEND) && npm install
 
-dev-backend: ## Run the backend API server (:8080)
+dev-backend: ## Run the backend API server (:10001)
 	cd $(BACKEND) && go run ./cmd/ccdash
 
 dev-frontend: ## Run the Vite dev server (:10000)

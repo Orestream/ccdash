@@ -46,7 +46,7 @@ export function parseWsEvent(data: unknown): WsEvent | null {
 /** Build the WebSocket URL from window.location (handles ws/wss). */
 export function buildWsUrl(path = '/ws'): string {
   if (typeof window === 'undefined' || !window.location) {
-    return `ws://localhost:8080${path}`;
+    return `ws://localhost:10000${path}`;
   }
   const { protocol, host } = window.location;
   const wsProtocol = protocol === 'https:' ? 'wss:' : 'ws:';

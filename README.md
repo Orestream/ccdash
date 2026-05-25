@@ -34,8 +34,8 @@ Prerequisites: Go 1.24+, Node 20+, and the `claude` CLI on your `PATH`.
 make setup          # install frontend deps + download Go modules
 
 # In two terminals:
-make dev-backend    # http://localhost:8080
-make dev-frontend   # http://localhost:10000  (proxies /api and /ws to :8080)
+make dev-backend    # http://localhost:10001
+make dev-frontend   # http://localhost:10000  (proxies /api and /ws to :10001)
 ```
 
 Open <http://localhost:10000>.
@@ -44,7 +44,7 @@ Open <http://localhost:10000>.
 
 | Var | Default | Meaning |
 |-----|---------|---------|
-| `CCDASH_ADDR` | `:8080` | listen address |
+| `CCDASH_ADDR` | `:10001` | listen address |
 | `CCDASH_DB` | `ccdash.db` | SQLite database path |
 | `CCDASH_CLAUDE_BIN` | `claude` | path to the claude binary |
 

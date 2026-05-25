@@ -1,6 +1,6 @@
 # ccdash API Contract
 
-The backend (Go, chi router) listens on `:8080` by default and exposes a JSON REST
+The backend (Go, chi router) listens on `:10001` by default and exposes a JSON REST
 API under `/api` plus a WebSocket endpoint at `/ws` for live updates. This document
 is the **source of truth** shared between the Go backend and the React frontend.
 
@@ -9,7 +9,7 @@ are `camelCase`.
 
 ## Conventions
 
-- Base URL: `http://localhost:8080`
+- Base URL: `http://localhost:10001`
 - Content type: `application/json` for request and response bodies.
 - Errors use HTTP status codes with a body of `{ "error": "message" }`.
 - During development the backend enables permissive CORS for the Vite dev server
