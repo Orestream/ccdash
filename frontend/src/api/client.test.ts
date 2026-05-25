@@ -6,11 +6,14 @@ import {
   getHealth,
   getUsageSummary,
   listMessages,
+  listPermissions,
   listProjects,
+  respondPermission,
   sendMessage,
+  setSessionMode,
   stopSession,
 } from './client';
-import type { Message, Project, UsageSummary } from '../types';
+import type { Message, PermissionRequest, Project, UsageSummary } from '../types';
 
 function jsonResponse(body: unknown, init: ResponseInit = {}): Response {
   return new Response(JSON.stringify(body), {
@@ -104,6 +107,7 @@ describe('api client', () => {
         title: 't',
         status: 'idle',
         model: 'm',
+        permissionMode: 'default',
         createdAt: 'x',
         updatedAt: 'y',
       }),
@@ -112,6 +116,60 @@ describe('api client', () => {
     const [url, opts] = fetchMock.mock.calls[0];
     expect(url).toBe('/api/sessions/abc/stop');
     expect(opts.method).toBe('POST');
+  });
+
+  it('PATCHes the session mode and returns the updated session', async () => {
+    const updated = {
+      id: 'abc',
+      projectId: 'p',
+      claudeSessionId: '',
+      title: 't',
+      status: 'idle',
+      model: 'm',
+      permissionMode: 'plan',
+      createdAt: 'x',
+      updatedAt: 'y',
+    };
+    fetchMock.mockResolvedValueOnce(jsonResponse(updated));
+    const result = await setSessionMode('abc', 'plan');
+    const [url, opts] = fetchMock.mock.calls[0];
+    expect(url).toBe('/api/sessions/abc/mode');
+    expect(opts.method).toBe('PATCH');
+    expect(JSON.parse(opts.body)).toEqual({ permissionMode: 'plan' });
+    expect(result).toEqual(updated);
+  });
+
+  it('lists pending permission requests', async () => {
+    const reqs: PermissionRequest[] = [
+      {
+        id: 'req1',
+        sessionId: 's1',
+        toolName: 'Bash',
+        input: { command: 'git status' },
+        summary: 'Bash: git status',
+        suggestions: ['allow', 'allow_always', 'deny'],
+        createdAt: '2026-05-25T12:00:40Z',
+      },
+    ];
+    fetchMock.mockResolvedValueOnce(jsonResponse(reqs));
+    const result = await listPermissions('s1');
+    const [url, opts] = fetchMock.mock.calls[0];
+    expect(url).toBe('/api/sessions/s1/permissions');
+    expect(opts.method).toBe('GET');
+    expect(result).toEqual(reqs);
+  });
+
+  it('posts a permission decision with the request id encoded', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ ok: true }));
+    const result = await respondPermission('s1', 'req 1', {
+      decision: 'deny',
+      message: 'no thanks',
+    });
+    const [url, opts] = fetchMock.mock.calls[0];
+    expect(url).toBe('/api/sessions/s1/permissions/req%201');
+    expect(opts.method).toBe('POST');
+    expect(JSON.parse(opts.body)).toEqual({ decision: 'deny', message: 'no thanks' });
+    expect(result).toEqual({ ok: true });
   });
 
   it('handles 204 (DELETE) without parsing a body', async () => {

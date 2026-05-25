@@ -6,7 +6,10 @@ import type {
   CreateSessionInput,
   Health,
   Message,
+  PermissionMode,
+  PermissionRequest,
   Project,
+  RespondPermissionInput,
   SendMessageInput,
   Session,
   UsageRecord,
@@ -143,6 +146,38 @@ export function stopSession(sessionId: string): Promise<Session> {
   return request<Session>(`/sessions/${encodeURIComponent(sessionId)}/stop`, {
     method: 'POST',
   });
+}
+
+export function setSessionMode(
+  sessionId: string,
+  permissionMode: PermissionMode,
+): Promise<Session> {
+  return request<Session>(`/sessions/${encodeURIComponent(sessionId)}/mode`, {
+    method: 'PATCH',
+    body: { permissionMode },
+  });
+}
+
+// --- Permissions ---
+export function listPermissions(
+  sessionId: string,
+  signal?: AbortSignal,
+): Promise<PermissionRequest[]> {
+  return request<PermissionRequest[]>(
+    `/sessions/${encodeURIComponent(sessionId)}/permissions`,
+    { signal },
+  );
+}
+
+export function respondPermission(
+  sessionId: string,
+  requestId: string,
+  input: RespondPermissionInput,
+): Promise<{ ok: boolean }> {
+  return request<{ ok: boolean }>(
+    `/sessions/${encodeURIComponent(sessionId)}/permissions/${encodeURIComponent(requestId)}`,
+    { method: 'POST', body: input },
+  );
 }
 
 export function getSessionUsage(

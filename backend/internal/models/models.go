@@ -2,7 +2,10 @@
 // JSON tags use camelCase to match the API contract in docs/API.md.
 package models
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // SessionStatus is the lifecycle state of a session as surfaced to the UI.
 type SessionStatus string
@@ -12,6 +15,8 @@ const (
 	StatusIdle SessionStatus = "idle"
 	// StatusProcessing means claude is actively working on a prompt.
 	StatusProcessing SessionStatus = "processing"
+	// StatusAwaitingApproval means claude paused on a tool needing a permission decision.
+	StatusAwaitingApproval SessionStatus = "awaiting_approval"
 	// StatusAwaitingInput means claude finished a turn and awaits the next message.
 	StatusAwaitingInput SessionStatus = "awaiting_input"
 	// StatusDone means the session ended / last run completed and was closed.
@@ -19,6 +24,39 @@ const (
 	// StatusError means the last run failed.
 	StatusError SessionStatus = "error"
 )
+
+// PermissionMode is the "answering mode" for a session, mirroring the claude CLI
+// --permission-mode flag.
+type PermissionMode string
+
+const (
+	// ModeDefault asks for every tool that needs permission (interactive menu).
+	ModeDefault PermissionMode = "default"
+	// ModeAcceptEdits auto-approves file edits, still asks for other tools.
+	ModeAcceptEdits PermissionMode = "acceptEdits"
+	// ModePlan lets claude plan without executing changes.
+	ModePlan PermissionMode = "plan"
+	// ModeAuto never asks (maps to claude bypassPermissions).
+	ModeAuto PermissionMode = "auto"
+)
+
+// ValidPermissionMode reports whether m is a known mode.
+func ValidPermissionMode(m PermissionMode) bool {
+	switch m {
+	case ModeDefault, ModeAcceptEdits, ModePlan, ModeAuto:
+		return true
+	default:
+		return false
+	}
+}
+
+// CLIPermissionMode maps a ccdash mode to the claude CLI --permission-mode value.
+func (m PermissionMode) CLIPermissionMode() string {
+	if m == ModeAuto {
+		return "bypassPermissions"
+	}
+	return string(m)
+}
 
 // Project is a working directory that sessions are launched against.
 type Project struct {
@@ -31,14 +69,27 @@ type Project struct {
 // Session is a single claude conversation tied to a project. Multiple sessions
 // can run concurrently and continue in the background.
 type Session struct {
-	ID              string        `json:"id"`
-	ProjectID       string        `json:"projectId"`
-	ClaudeSessionID string        `json:"claudeSessionId"`
-	Title           string        `json:"title"`
-	Status          SessionStatus `json:"status"`
-	Model           string        `json:"model"`
-	CreatedAt       time.Time     `json:"createdAt"`
-	UpdatedAt       time.Time     `json:"updatedAt"`
+	ID              string         `json:"id"`
+	ProjectID       string         `json:"projectId"`
+	ClaudeSessionID string         `json:"claudeSessionId"`
+	Title           string         `json:"title"`
+	Status          SessionStatus  `json:"status"`
+	Model           string         `json:"model"`
+	PermissionMode  PermissionMode `json:"permissionMode"`
+	CreatedAt       time.Time      `json:"createdAt"`
+	UpdatedAt       time.Time      `json:"updatedAt"`
+}
+
+// PermissionRequest is a pending tool-permission decision surfaced to the UI.
+// Pending requests live in backend memory for the life of a run.
+type PermissionRequest struct {
+	ID          string          `json:"id"`
+	SessionID   string          `json:"sessionId"`
+	ToolName    string          `json:"toolName"`
+	Input       json.RawMessage `json:"input"`
+	Summary     string          `json:"summary"`
+	Suggestions []string        `json:"suggestions"`
+	CreatedAt   time.Time       `json:"createdAt"`
 }
 
 // Message is one entry in a session transcript.

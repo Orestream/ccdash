@@ -14,13 +14,23 @@ is open work. Roughly ordered by priority.
 - [x] WebSocket live updates with reconnect.
 - [x] Linting (golangci-lint, ESLint), CI workflow, auto-commit-on-green Stop hook.
 
+## ✅ Done (streaming + approvals + modes)
+
+- [x] Persistent bidirectional stream-json claude session (Send / Respond / Events / Close).
+- [x] **Stream assistant deltas** (text + thinking) to the UI via `session.delta`.
+- [x] Tool-use activity surfaced as distinct `tool` messages.
+- [x] Interactive tool-permission approvals (Allow / Allow always / Deny) + `awaiting_approval`.
+- [x] Per-session answering modes: Default / Edit (`acceptEdits`) / Plan / Auto.
+- [x] Composer: Enter = send, Shift+Enter = newline; always typeable.
+
+> ⚠️ The control-protocol message shapes are implemented against the documented
+> format but still need verifying against a real `claude` run (see ARCHITECTURE).
+
 ## ⬜ Backend
 
-- [ ] **Stream assistant deltas** to the UI (`session.message` partials) instead
-      of one message per turn.
-- [ ] Tool-use / tool-result events surfaced as distinct message types.
+- [ ] **Verify the control protocol** against a live claude run; adjust shapes in `claude/runner.go` if needed.
 - [ ] Reconcile a session's `claude_session_id` reliably across resumes.
-- [ ] Configurable permission mode / allowed tools per session.
+- [ ] `--allowedTools` / `--disallowedTools` per session in addition to modes.
 - [ ] Reattach to / recover in-flight runs after a backend restart.
 - [ ] Usage: track cache-read/-write tokens and per-model rates; daily rollups.
 - [ ] Endpoint + storage for run logs (stderr) for debugging failed runs.

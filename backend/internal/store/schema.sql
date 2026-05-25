@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     title             TEXT NOT NULL DEFAULT '',
     status            TEXT NOT NULL DEFAULT 'idle',
     model             TEXT NOT NULL DEFAULT '',
+    permission_mode   TEXT NOT NULL DEFAULT 'default',
     created_at        TEXT NOT NULL,
     updated_at        TEXT NOT NULL
 );

@@ -11,6 +11,9 @@ export type WsEventHandler = (event: WsEvent) => void;
 const VALID_TYPES: ReadonlySet<WsEventType> = new Set<WsEventType>([
   'session.status',
   'session.message',
+  'session.delta',
+  'session.permission',
+  'session.permission_resolved',
   'session.usage',
   'project.created',
   'project.deleted',

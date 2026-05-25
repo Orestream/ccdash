@@ -59,7 +59,7 @@ func TestSessionLifecycle(t *testing.T) {
 	s := newTestStore(t)
 	p, _ := s.CreateProject("demo", "/tmp/demo")
 
-	sess, err := s.CreateSession(p.ID, "task", "claude-opus-4-7")
+	sess, err := s.CreateSession(p.ID, "task", "claude-opus-4-7", models.ModeDefault)
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}
@@ -85,9 +85,35 @@ func TestSessionLifecycle(t *testing.T) {
 	}
 }
 
+func TestSessionModePersistence(t *testing.T) {
+	s := newTestStore(t)
+	p, _ := s.CreateProject("demo", "/tmp/demo")
+
+	sess, _ := s.CreateSession(p.ID, "task", "m", models.ModeAcceptEdits)
+	if sess.PermissionMode != models.ModeAcceptEdits {
+		t.Fatalf("expected acceptEdits on create, got %s", sess.PermissionMode)
+	}
+	// Empty mode defaults to ModeDefault.
+	def, _ := s.CreateSession(p.ID, "task2", "m", "")
+	if def.PermissionMode != models.ModeDefault {
+		t.Fatalf("expected default mode, got %s", def.PermissionMode)
+	}
+
+	if err := s.UpdateSessionMode(sess.ID, models.ModeAuto); err != nil {
+		t.Fatalf("update mode: %v", err)
+	}
+	got, _ := s.GetSession(sess.ID)
+	if got.PermissionMode != models.ModeAuto {
+		t.Fatalf("expected auto after update, got %s", got.PermissionMode)
+	}
+	if err := s.UpdateSessionMode("ghost", models.ModeAuto); err != ErrNotFound {
+		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+}
+
 func TestCreateSessionUnknownProject(t *testing.T) {
 	s := newTestStore(t)
-	if _, err := s.CreateSession("ghost", "t", "m"); err != ErrNotFound {
+	if _, err := s.CreateSession("ghost", "t", "m", models.ModeDefault); err != ErrNotFound {
 		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
 }
@@ -95,7 +121,7 @@ func TestCreateSessionUnknownProject(t *testing.T) {
 func TestMessagesAndUsage(t *testing.T) {
 	s := newTestStore(t)
 	p, _ := s.CreateProject("demo", "/tmp/demo")
-	sess, _ := s.CreateSession(p.ID, "task", "claude-opus-4-7")
+	sess, _ := s.CreateSession(p.ID, "task", "claude-opus-4-7", models.ModeDefault)
 
 	if _, err := s.AddMessage(sess.ID, "user", "hello"); err != nil {
 		t.Fatalf("add user msg: %v", err)
@@ -133,7 +159,7 @@ func TestMessagesAndUsage(t *testing.T) {
 func TestDeleteProjectCascades(t *testing.T) {
 	s := newTestStore(t)
 	p, _ := s.CreateProject("demo", "/tmp/demo")
-	sess, _ := s.CreateSession(p.ID, "task", "m")
+	sess, _ := s.CreateSession(p.ID, "task", "m", models.ModeDefault)
 
 	if err := s.DeleteProject(p.ID); err != nil {
 		t.Fatalf("delete: %v", err)

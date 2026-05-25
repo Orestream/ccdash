@@ -7,6 +7,7 @@ const cases: Array<{ status: SessionStatus; label: string }> = [
   { status: 'idle', label: 'Idle' },
   { status: 'processing', label: 'Processing' },
   { status: 'awaiting_input', label: 'Awaiting input' },
+  { status: 'awaiting_approval', label: 'Awaiting approval' },
   { status: 'done', label: 'Done' },
   { status: 'error', label: 'Error' },
 ];

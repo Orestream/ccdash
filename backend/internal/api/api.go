@@ -13,6 +13,7 @@ import (
 	"github.com/go-chi/cors"
 	"github.com/gorilla/websocket"
 
+	"github.com/robinmalmstrom/ccdash/backend/internal/models"
 	"github.com/robinmalmstrom/ccdash/backend/internal/session"
 	"github.com/robinmalmstrom/ccdash/backend/internal/store"
 	"github.com/robinmalmstrom/ccdash/backend/internal/ws"
@@ -75,6 +76,9 @@ func (s *Server) Router() http.Handler {
 			r.Get("/{id}/messages", s.handleListMessages)
 			r.Post("/{id}/messages", s.handleSendMessage)
 			r.Post("/{id}/stop", s.handleStopSession)
+			r.Patch("/{id}/mode", s.handleSetMode)
+			r.Get("/{id}/permissions", s.handleListPermissions)
+			r.Post("/{id}/permissions/{requestId}", s.handleRespondPermission)
 			r.Get("/{id}/usage", s.handleSessionUsage)
 		})
 
@@ -194,12 +198,17 @@ func (s *Server) handleListProjectSessions(w http.ResponseWriter, r *http.Reques
 func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	var body struct {
-		Title string `json:"title"`
-		Model string `json:"model"`
+		Title          string                `json:"title"`
+		Model          string                `json:"model"`
+		PermissionMode models.PermissionMode `json:"permissionMode"`
 	}
 	// Body is optional for session creation.
 	_ = json.NewDecoder(r.Body).Decode(&body)
-	sess, err := s.store.CreateSession(id, body.Title, body.Model)
+	if body.PermissionMode != "" && !models.ValidPermissionMode(body.PermissionMode) {
+		writeErr(w, http.StatusBadRequest, "invalid permissionMode")
+		return
+	}
+	sess, err := s.store.CreateSession(id, body.Title, body.Model, body.PermissionMode)
 	if err != nil {
 		writeErr(w, statusForErr(err), err.Error())
 		return
@@ -274,6 +283,64 @@ func (s *Server) handleStopSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, sess)
+}
+
+func (s *Server) handleSetMode(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	var body struct {
+		PermissionMode models.PermissionMode `json:"permissionMode"`
+	}
+	if !decode(w, r, &body) {
+		return
+	}
+	if !models.ValidPermissionMode(body.PermissionMode) {
+		writeErr(w, http.StatusBadRequest, "invalid permissionMode")
+		return
+	}
+	sess, err := s.mgr.SetMode(id, body.PermissionMode)
+	if err != nil {
+		writeErr(w, statusForErr(err), err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, sess)
+}
+
+func (s *Server) handleListPermissions(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if _, err := s.store.GetSession(id); err != nil {
+		writeErr(w, statusForErr(err), err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, s.mgr.PendingPermissions(id))
+}
+
+func (s *Server) handleRespondPermission(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	requestID := chi.URLParam(r, "requestId")
+	var body struct {
+		Decision string `json:"decision"`
+		Message  string `json:"message"`
+	}
+	if !decode(w, r, &body) {
+		return
+	}
+	var allow, always bool
+	switch body.Decision {
+	case "allow":
+		allow = true
+	case "allow_always":
+		allow, always = true, true
+	case "deny":
+		// allow stays false
+	default:
+		writeErr(w, http.StatusBadRequest, "decision must be allow, allow_always, or deny")
+		return
+	}
+	if err := s.mgr.RespondPermission(id, requestID, allow, always, body.Message); err != nil {
+		writeErr(w, statusForErr(err), err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 func (s *Server) handleSessionUsage(w http.ResponseWriter, r *http.Request) {

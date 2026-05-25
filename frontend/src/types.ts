@@ -12,8 +12,11 @@ export type SessionStatus =
   | 'idle'
   | 'processing'
   | 'awaiting_input'
+  | 'awaiting_approval'
   | 'done'
   | 'error';
+
+export type PermissionMode = 'default' | 'acceptEdits' | 'plan' | 'auto';
 
 export interface Session {
   id: string;
@@ -22,11 +25,12 @@ export interface Session {
   title: string;
   status: SessionStatus;
   model: string;
+  permissionMode: PermissionMode;
   createdAt: string;
   updatedAt: string;
 }
 
-export type MessageRole = 'user' | 'assistant' | 'system' | 'tool';
+export type MessageRole = 'user' | 'assistant' | 'thinking' | 'system' | 'tool';
 
 export interface Message {
   id: string;
@@ -65,10 +69,41 @@ export interface Health {
   version: string;
 }
 
+// PermissionRequest — emitted when a session pauses for a tool-permission decision.
+export type PermissionDecision = 'allow' | 'allow_always' | 'deny';
+
+export interface PermissionRequest {
+  id: string;
+  sessionId: string;
+  toolName: string;
+  input: Record<string, unknown>;
+  summary: string;
+  suggestions: string[];
+  createdAt: string;
+}
+
+// SessionDelta — a streaming chunk for the in-progress assistant turn.
+export type DeltaKind = 'text' | 'thinking' | 'tool';
+
+export interface SessionDelta {
+  sessionId: string;
+  kind: DeltaKind;
+  text: string;
+}
+
+export interface PermissionResolved {
+  sessionId: string;
+  requestId: string;
+  decision: PermissionDecision;
+}
+
 // WebSocket events.
 export type WsEventType =
   | 'session.status'
   | 'session.message'
+  | 'session.delta'
+  | 'session.permission'
+  | 'session.permission_resolved'
   | 'session.usage'
   | 'project.created'
   | 'project.deleted';
@@ -82,6 +117,9 @@ interface WsEventBase<T extends WsEventType, P> {
 export type WsEvent =
   | WsEventBase<'session.status', Session>
   | WsEventBase<'session.message', Message>
+  | WsEventBase<'session.delta', SessionDelta>
+  | WsEventBase<'session.permission', PermissionRequest>
+  | WsEventBase<'session.permission_resolved', PermissionResolved>
   | WsEventBase<'session.usage', UsageRecord>
   | WsEventBase<'project.created', Project>
   | WsEventBase<'project.deleted', Project>;
@@ -95,8 +133,14 @@ export interface CreateProjectInput {
 export interface CreateSessionInput {
   title?: string;
   model?: string;
+  permissionMode?: PermissionMode;
 }
 
 export interface SendMessageInput {
   content: string;
+}
+
+export interface RespondPermissionInput {
+  decision: PermissionDecision;
+  message?: string;
 }

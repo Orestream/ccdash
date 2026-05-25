@@ -29,21 +29,29 @@ API plus a WebSocket for live push. The contract is in [`API.md`](./API.md).
   (no CGO). Schema is embedded from `schema.sql`. One open connection
   (`SetMaxOpenConns(1)`) because SQLite is single-writer. Timestamps are stored
   as RFC3339Nano text. Returns `ErrNotFound` for missing rows.
-- **`claude`** — integration with the CLI. `Runner` is an interface; `CLIRunner`
-  spawns `claude -p <prompt> --output-format stream-json --verbose [--model …]
-  [--resume <id>]` in the project's directory and parses each JSON line into a
-  typed `Event` (`system`/`assistant`/`result`/`error`). The parser
-  (`parseLine`) is pure and unit-tested without spawning a process.
+- **`claude`** — integration with the CLI over its streaming-JSON protocol.
+  `Runner.Start` spawns a **long-lived** process: `claude -p --input-format
+  stream-json --output-format stream-json --include-partial-messages --verbose
+  [--model …] [--permission-mode …] [--resume <id>]`. The returned `Session`
+  lets us `Send` user turns and `Respond` to permission requests on stdin, and
+  exposes an `Events()` channel. `parseLine` normalizes each stdout line into a
+  typed `Event` (`system` / `text`+`thinking` deltas / `tool_use` / `assistant`
+  / `permission` / `result` / `error`) and is pure + unit-tested without
+  spawning a process. The exact control-protocol shapes are isolated to
+  `parseLine`/`Send`/`Respond` so they can be adjusted after testing.
 - **`ws`** — a transport-agnostic fan-out `Hub`. Subscribers get a buffered
   channel; slow consumers are dropped rather than blocking the producer (they
   resync over REST).
-- **`session`** — the orchestrator. `SendMessage` persists the user message,
-  flips the session to `processing`, and launches the run in its own goroutine,
-  so **many sessions advance concurrently and keep running in the background**.
-  In-flight runs are tracked in a `cancels` map so `Stop` can cancel a run's
-  context (which kills the CLI process). Assistant output is accumulated and
-  persisted; usage is recorded; status transitions and new rows are broadcast
-  over the hub.
+- **`session`** — the orchestrator. Each ccdash session owns a live
+  `claude.Session` whose events are pumped in a dedicated goroutine, so **many
+  sessions stream and progress concurrently in the background**. `SendMessage`
+  persists the user turn, (re)starts the live process if needed, and forwards
+  the turn; the pump broadcasts streaming `session.delta`s (text/thinking),
+  persists final messages + tool activity, records usage, and surfaces
+  permission requests. Pending permission requests are held in memory per
+  session; `RespondPermission` answers them (with `allow_always` remembering a
+  tool for the session), `SetMode` changes the answering mode, and `Stop` closes
+  the process. Status flows `idle → processing → awaiting_approval/awaiting_input`.
 - **`api`** — chi router. REST handlers are thin wrappers over `store`/`session`;
   `/ws` upgrades to a WebSocket, subscribes to the hub, and pumps events to the
   client (with periodic pings and a reader goroutine to detect disconnects).
@@ -78,6 +86,9 @@ API plus a WebSocket for live push. The contract is in [`API.md`](./API.md).
 
 ## Known gaps (skeleton)
 
-See [`TODO.md`](../TODO.md). Notably: streaming assistant deltas to the UI (today
-the full assistant message is sent once per turn), auth, multi-user, and
-persisting the WebSocket reconnect/replay cursor.
+See [`TODO.md`](../TODO.md). The streaming-JSON control protocol shapes (permission
+`control_request`/`control_response`, partial-message events) are implemented
+against the documented format but **not yet verified against a live claude run** —
+they're isolated to `claude/runner.go` for easy adjustment. Other gaps: auth,
+multi-user, persisting the WebSocket reconnect/replay cursor, and recovering
+in-flight runs after a backend restart.

@@ -8,6 +8,7 @@ import (
 	_ "embed"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -44,7 +45,25 @@ func Open(dsn string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("apply schema: %w", err)
 	}
+	if err := migrate(db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("migrate: %w", err)
+	}
 	return &Store{db: db}, nil
+}
+
+// migrate applies idempotent column additions for databases created by an older
+// schema. ADD COLUMN errors for already-present columns are ignored.
+func migrate(db *sql.DB) error {
+	alters := []string{
+		`ALTER TABLE sessions ADD COLUMN permission_mode TEXT NOT NULL DEFAULT 'default'`,
+	}
+	for _, stmt := range alters {
+		if _, err := db.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+			return err
+		}
+	}
+	return nil
 }
 
 // Close closes the underlying database.
@@ -132,25 +151,30 @@ func (s *Store) DeleteProject(id string) error {
 
 // --- Sessions ---
 
-// CreateSession inserts a new idle session for a project.
-func (s *Store) CreateSession(projectID, title, model string) (models.Session, error) {
+// CreateSession inserts a new idle session for a project. An empty mode defaults
+// to ModeDefault.
+func (s *Store) CreateSession(projectID, title, model string, mode models.PermissionMode) (models.Session, error) {
 	if _, err := s.GetProject(projectID); err != nil {
 		return models.Session{}, err
 	}
+	if mode == "" {
+		mode = models.ModeDefault
+	}
 	now := time.Now().UTC()
 	sess := models.Session{
-		ID:        uuid.NewString(),
-		ProjectID: projectID,
-		Title:     title,
-		Status:    models.StatusIdle,
-		Model:     model,
-		CreatedAt: now,
-		UpdatedAt: now,
+		ID:             uuid.NewString(),
+		ProjectID:      projectID,
+		Title:          title,
+		Status:         models.StatusIdle,
+		Model:          model,
+		PermissionMode: mode,
+		CreatedAt:      now,
+		UpdatedAt:      now,
 	}
 	_, err := s.db.Exec(
-		`INSERT INTO sessions (id, project_id, claude_session_id, title, status, model, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		sess.ID, sess.ProjectID, sess.ClaudeSessionID, sess.Title, sess.Status, sess.Model,
+		`INSERT INTO sessions (id, project_id, claude_session_id, title, status, model, permission_mode, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		sess.ID, sess.ProjectID, sess.ClaudeSessionID, sess.Title, sess.Status, sess.Model, sess.PermissionMode,
 		now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano),
 	)
 	if err != nil {
@@ -161,20 +185,21 @@ func (s *Store) CreateSession(projectID, title, model string) (models.Session, e
 
 func scanSession(scanner interface{ Scan(...any) error }) (models.Session, error) {
 	var sess models.Session
-	var status, created, updated string
+	var status, mode, created, updated string
 	if err := scanner.Scan(
 		&sess.ID, &sess.ProjectID, &sess.ClaudeSessionID, &sess.Title,
-		&status, &sess.Model, &created, &updated,
+		&status, &sess.Model, &mode, &created, &updated,
 	); err != nil {
 		return models.Session{}, err
 	}
 	sess.Status = models.SessionStatus(status)
+	sess.PermissionMode = models.PermissionMode(mode)
 	sess.CreatedAt = parseTime(created)
 	sess.UpdatedAt = parseTime(updated)
 	return sess, nil
 }
 
-const sessionCols = `id, project_id, claude_session_id, title, status, model, created_at, updated_at`
+const sessionCols = `id, project_id, claude_session_id, title, status, model, permission_mode, created_at, updated_at`
 
 // ListSessions returns all sessions, newest first.
 func (s *Store) ListSessions() ([]models.Session, error) {
@@ -231,6 +256,22 @@ func (s *Store) UpdateSessionStatus(id string, status models.SessionStatus) erro
 	)
 	if err != nil {
 		return fmt.Errorf("update session status: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// UpdateSessionMode changes a session's answering (permission) mode.
+func (s *Store) UpdateSessionMode(id string, mode models.PermissionMode) error {
+	res, err := s.db.Exec(
+		`UPDATE sessions SET permission_mode = ?, updated_at = ? WHERE id = ?`,
+		mode, nowStr(), id,
+	)
+	if err != nil {
+		return fmt.Errorf("update session mode: %w", err)
 	}
 	n, _ := res.RowsAffected()
 	if n == 0 {
