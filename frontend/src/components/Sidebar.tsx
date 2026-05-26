@@ -1,10 +1,15 @@
-// Sidebar — project list plus a "new project" form (name, path).
+// Sidebar — compact project list. Each project is a row (path hidden; shown on
+// the project page) with a quick-add button to launch a session, and its three
+// most-recently-used sessions listed beneath it as sub-menu items.
 
-import { useCallback, useEffect, useState } from 'react';
-import { NavLink } from 'react-router-dom';
-import { ApiError, createProject, listProjects } from '../api/client';
-import type { Project } from '../types';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { NavLink, useNavigate } from 'react-router-dom';
+import { ApiError, createProject, createSession, listProjects } from '../api/client';
+import type { Project, Session } from '../types';
+import { useSessions } from '../hooks/useSessions';
 import { useWebSocket } from '../hooks/useWebSocket';
+
+const RECENT_SESSION_LIMIT = 3;
 
 export function Sidebar() {
   const [projects, setProjects] = useState<Project[]>([]);
@@ -14,7 +19,10 @@ export function Sidebar() {
   const [path, setPath] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+  const [addingTo, setAddingTo] = useState<string | null>(null);
   const { subscribe } = useWebSocket();
+  const { sessions, reload: reloadSessions } = useSessions();
+  const navigate = useNavigate();
 
   const load = useCallback((signal?: AbortSignal) => {
     setLoading(true);
@@ -50,6 +58,36 @@ export function Sidebar() {
       }
     });
   }, [subscribe]);
+
+  // Three most-recently-updated sessions per project, keyed by project id.
+  const recentByProject = useMemo(() => {
+    const map = new Map<string, Session[]>();
+    for (const s of sessions) {
+      const arr = map.get(s.projectId);
+      if (arr) arr.push(s);
+      else map.set(s.projectId, [s]);
+    }
+    for (const arr of map.values()) {
+      arr.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+      arr.splice(RECENT_SESSION_LIMIT);
+    }
+    return map;
+  }, [sessions]);
+
+  const handleQuickAdd = async (projectId: string) => {
+    if (addingTo) return;
+    setAddingTo(projectId);
+    try {
+      const created = await createSession(projectId);
+      reloadSessions();
+      navigate(`/sessions/${created.id}`);
+    } catch {
+      // Fall back to the project page, where the error surfaces with detail.
+      navigate(`/projects/${projectId}`);
+    } finally {
+      setAddingTo(null);
+    }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -94,19 +132,56 @@ export function Sidebar() {
           <p className="muted">No projects yet.</p>
         )}
         <ul>
-          {projects.map((p) => (
-            <li key={p.id}>
-              <NavLink
-                to={`/projects/${p.id}`}
-                className={({ isActive }) =>
-                  isActive ? 'project-link active' : 'project-link'
-                }
-              >
-                <span className="project-name">{p.name}</span>
-                <span className="project-path">{p.path}</span>
-              </NavLink>
-            </li>
-          ))}
+          {projects.map((p) => {
+            const recent = recentByProject.get(p.id) ?? [];
+            return (
+              <li key={p.id} className="project-item">
+                <div className="project-row">
+                  <NavLink
+                    to={`/projects/${p.id}`}
+                    className={({ isActive }) =>
+                      isActive ? 'project-link active' : 'project-link'
+                    }
+                    title={p.path}
+                  >
+                    <span className="project-name">{p.name}</span>
+                  </NavLink>
+                  <button
+                    type="button"
+                    className="quick-add"
+                    aria-label={`New session in ${p.name}`}
+                    title="New session"
+                    disabled={addingTo === p.id}
+                    onClick={() => handleQuickAdd(p.id)}
+                  >
+                    +
+                  </button>
+                </div>
+                {recent.length > 0 && (
+                  <ul className="session-sublist">
+                    {recent.map((s) => (
+                      <li key={s.id}>
+                        <NavLink
+                          to={`/sessions/${s.id}`}
+                          className={({ isActive }) =>
+                            isActive ? 'session-sublink active' : 'session-sublink'
+                          }
+                        >
+                          <span
+                            className={`session-dot status-${s.status}`}
+                            aria-hidden="true"
+                          />
+                          <span className="session-subname">
+                            {s.title || 'Untitled session'}
+                          </span>
+                        </NavLink>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </li>
+            );
+          })}
         </ul>
       </nav>
 
