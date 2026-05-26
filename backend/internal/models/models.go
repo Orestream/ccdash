@@ -11,13 +11,16 @@ import (
 type SessionStatus string
 
 const (
-	// StatusIdle means the session exists but has no prompt running.
+	// StatusIdle means no prompt is running: the session was just created, or it
+	// finished its last turn and is ready for the next message.
 	StatusIdle SessionStatus = "idle"
 	// StatusProcessing means claude is actively working on a prompt.
 	StatusProcessing SessionStatus = "processing"
 	// StatusAwaitingApproval means claude paused on a tool needing a permission decision.
 	StatusAwaitingApproval SessionStatus = "awaiting_approval"
-	// StatusAwaitingInput means claude finished a turn and awaits the next message.
+	// StatusAwaitingInput means claude paused waiting for the user to answer an
+	// interactive dialog (not a permission prompt — that is StatusAwaitingApproval).
+	// A normally completed turn goes to StatusIdle, not here.
 	StatusAwaitingInput SessionStatus = "awaiting_input"
 	// StatusDone means the session ended / last run completed and was closed.
 	StatusDone SessionStatus = "done"

@@ -221,7 +221,8 @@ func (m *Manager) Rename(sessionID, title string) (models.Session, error) {
 	return sess, nil
 }
 
-// Stop terminates a session's live process and returns it to awaiting_input.
+// Stop terminates a session's live process and returns it to idle, ready for the
+// next prompt (a fresh process is started on the next Send).
 func (m *Manager) Stop(sessionID string) error {
 	sess, err := m.store.GetSession(sessionID)
 	if err != nil {
@@ -233,7 +234,7 @@ func (m *Manager) Stop(sessionID string) error {
 	if ls != nil {
 		_ = ls.cs.Close()
 	}
-	m.setStatus(&sess, models.StatusAwaitingInput)
+	m.setStatus(&sess, models.StatusIdle)
 	return nil
 }
 
@@ -331,7 +332,10 @@ func (m *Manager) pump(ls *liveSession) {
 			if rec, uerr := m.store.AddUsage(ls.id, pick(ev.Model, sess.Model), ev.InputTokens, ev.OutputTokens, ev.CostUSD); uerr == nil {
 				m.hub.Broadcast("session.usage", rec)
 			}
-			m.setStatus(&sess, models.StatusAwaitingInput)
+			// Turn finished with nothing pending: back to idle and ready for the
+			// next prompt. (A turn that needs an answer pauses on awaiting_approval
+			// instead and never reaches a result here.)
+			m.setStatus(&sess, models.StatusIdle)
 
 		case claude.KindError:
 			m.fail(&sess, ev.Err)

@@ -127,8 +127,8 @@ func TestSendMessageStreamingSuccess(t *testing.T) {
 	mgr.Wait()
 
 	got, _ := st.GetSession(sess.ID)
-	if got.Status != models.StatusAwaitingInput {
-		t.Fatalf("expected awaiting_input, got %s", got.Status)
+	if got.Status != models.StatusIdle {
+		t.Fatalf("expected idle after completed turn, got %s", got.Status)
 	}
 	if got.ClaudeSessionID != "claude-xyz" {
 		t.Fatalf("claude id not captured: %q", got.ClaudeSessionID)
@@ -147,6 +147,26 @@ func TestSendMessageStreamingSuccess(t *testing.T) {
 	if runner.lastReq.Cwd != "/tmp/demo" {
 		t.Fatalf("expected cwd from project, got %q", runner.lastReq.Cwd)
 	}
+}
+
+func TestStopReturnsToIdle(t *testing.T) {
+	fs := newFakeSession()
+	mgr, st, sess := setup(t, &fakeRunner{sess: fs})
+
+	if _, err := mgr.SendMessage(sess.ID, "hello", nil); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	waitForStatus(t, st, sess.ID, models.StatusProcessing)
+
+	if err := mgr.Stop(sess.ID); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	if got, _ := st.GetSession(sess.ID); got.Status != models.StatusIdle {
+		t.Fatalf("expected idle after stop, got %s", got.Status)
+	}
+
+	fs.done()
+	mgr.Wait()
 }
 
 func TestThinkingPersisted(t *testing.T) {
@@ -201,8 +221,8 @@ func TestPermissionAllowAlways(t *testing.T) {
 			t.Fatalf("expected allow, got deny for %s", r.id)
 		}
 	}
-	if got, _ := st.GetSession(sess.ID); got.Status != models.StatusAwaitingInput {
-		t.Fatalf("expected awaiting_input, got %s", got.Status)
+	if got, _ := st.GetSession(sess.ID); got.Status != models.StatusIdle {
+		t.Fatalf("expected idle after completed turn, got %s", got.Status)
 	}
 }
 

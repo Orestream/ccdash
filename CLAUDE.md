@@ -75,6 +75,10 @@ Run from the repo root via the Makefile, or directly in each subdir.
 
 ## Status model
 
-`idle → processing → awaiting_input` per turn; `done` when closed; `error` on
-failure. The session manager persists status and broadcasts `session.status`
-events over the hub so every connected client updates live.
+Per turn: `idle → processing → idle` (a completed turn returns to `idle`, ready
+for the next message). If a tool needs a permission decision the turn pauses on
+`awaiting_approval` until answered, then resumes `processing`. `awaiting_input`
+is reserved for a genuine interactive-dialog prompt (not permissions); `done`
+when closed; `error` on failure. The session manager persists status and
+broadcasts `session.status` events over the hub so every connected client
+updates live.
