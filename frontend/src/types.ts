@@ -76,6 +76,21 @@ export interface UsageSummary {
   bySession: SessionUsage[];
 }
 
+// One rate-limit window from the Claude subscription /usage view.
+export interface UsageWindow {
+  usedPercent: number;
+  resetsAt?: string;
+}
+
+// Utilization mirrors the CLI's /usage: session (5h) + weekly limit windows.
+// Windows the account lacks (e.g. a separate Opus limit) are omitted.
+export interface Utilization {
+  session?: UsageWindow;
+  week?: UsageWindow;
+  weekOpus?: UsageWindow;
+  fetchedAt: string;
+}
+
 export interface Health {
   status: string;
   version: string;

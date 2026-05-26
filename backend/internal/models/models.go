@@ -140,3 +140,20 @@ type UsageSummary struct {
 	TotalCostUSD      float64        `json:"totalCostUsd"`
 	BySession         []SessionUsage `json:"bySession"`
 }
+
+// UsageWindow is one rate-limit window from the Claude subscription /usage view:
+// how much of the limit is consumed and when it resets.
+type UsageWindow struct {
+	UsedPercent float64    `json:"usedPercent"`
+	ResetsAt    *time.Time `json:"resetsAt,omitempty"`
+}
+
+// Utilization mirrors what the `claude` CLI shows via /usage for a Pro/Max
+// subscription: the session (5-hour) and weekly limit windows. Windows the
+// account does not have (e.g. a separate Opus limit) are nil.
+type Utilization struct {
+	Session   *UsageWindow `json:"session,omitempty"`  // five_hour
+	Week      *UsageWindow `json:"week,omitempty"`     // seven_day (all models)
+	WeekOpus  *UsageWindow `json:"weekOpus,omitempty"` // seven_day_opus
+	FetchedAt time.Time    `json:"fetchedAt"`
+}

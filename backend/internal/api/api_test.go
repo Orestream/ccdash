@@ -5,9 +5,11 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/robinmalmstrom/ccdash/backend/internal/claude"
 	"github.com/robinmalmstrom/ccdash/backend/internal/models"
@@ -47,7 +49,17 @@ func newTestServer(t *testing.T) http.Handler {
 	t.Cleanup(func() { _ = st.Close() })
 	hub := ws.NewHub()
 	mgr := session.New(st, hub, nopRunner{})
-	return NewServer(st, mgr, hub, "test").Router()
+	return NewServer(st, mgr, hub, fakeUtil{}, "test").Router()
+}
+
+// fakeUtil is a stub UtilizationFetcher for the HTTP tests.
+type fakeUtil struct {
+	u   models.Utilization
+	err error
+}
+
+func (f fakeUtil) Fetch(context.Context) (models.Utilization, error) {
+	return f.u, f.err
 }
 
 func do(t *testing.T, h http.Handler, method, path string, body any) *httptest.ResponseRecorder {
@@ -284,6 +296,53 @@ func TestRespondPermissionValidation(t *testing.T) {
 	rec = do(t, h, http.MethodPost, "/api/sessions/"+sess.ID+"/permissions/req_1", map[string]string{"decision": "allow"})
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d", rec.Code)
+	}
+}
+
+func TestUsageLimits(t *testing.T) {
+	reset := time.Date(2026, 5, 29, 6, 0, 0, 0, time.UTC)
+	util := fakeUtil{u: models.Utilization{
+		Session:   &models.UsageWindow{UsedPercent: 3},
+		Week:      &models.UsageWindow{UsedPercent: 9, ResetsAt: &reset},
+		FetchedAt: time.Now(),
+	}}
+	st, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	hub := ws.NewHub()
+	h := NewServer(st, session.New(st, hub, nopRunner{}), hub, util, "test").Router()
+
+	rec := do(t, h, http.MethodGet, "/api/usage/limits", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var got models.Utilization
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.Session == nil || got.Session.UsedPercent != 3 {
+		t.Errorf("session = %+v, want UsedPercent 3", got.Session)
+	}
+	if got.WeekOpus != nil {
+		t.Errorf("weekOpus = %+v, want nil", got.WeekOpus)
+	}
+}
+
+func TestUsageLimitsError(t *testing.T) {
+	st, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	hub := ws.NewHub()
+	util := fakeUtil{err: errors.New("token expired")}
+	h := NewServer(st, session.New(st, hub, nopRunner{}), hub, util, "test").Router()
+
+	rec := do(t, h, http.MethodGet, "/api/usage/limits", nil)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502", rec.Code)
 	}
 }
 

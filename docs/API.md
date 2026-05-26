@@ -124,6 +124,22 @@ live in backend memory for the life of the run (not persisted across restarts).
 }
 ```
 
+### Utilization
+The Claude subscription rate-limit usage behind the `claude` CLI's `/usage`
+view. The backend reads the OAuth token from the local credentials file
+(`CCDASH_CRED_PATH`, default `~/.claude/.credentials.json`) and queries the
+undocumented `GET /api/oauth/usage` endpoint. `usedPercent` is a percentage
+(0–100). Windows the account does not have (e.g. a separate Opus limit) are
+omitted; `resetsAt` may be absent.
+```json
+{
+  "session": { "usedPercent": 3.0, "resetsAt": "2026-05-26T16:50:00Z" },
+  "week": { "usedPercent": 9.0, "resetsAt": "2026-05-29T06:00:00Z" },
+  "weekOpus": { "usedPercent": 0.0 },
+  "fetchedAt": "2026-05-26T14:56:49Z"
+}
+```
+
 ## REST endpoints
 
 | Method | Path | Body | Returns |
@@ -147,6 +163,7 @@ live in backend memory for the life of the run (not persisted across restarts).
 | GET    | `/api/sessions/{id}/usage` | — | `UsageRecord[]` |
 | GET    | `/api/attachments/{id}` | — | raw image bytes (`Content-Type` is the stored media type) |
 | GET    | `/api/usage` | — | `UsageSummary` |
+| GET    | `/api/usage/limits` | — | `Utilization` (subscription /usage; 502 if unavailable, 501 if unconfigured) |
 
 `decision` semantics: `allow` approves this one request; `allow_always` approves
 it and auto-approves further requests for the same tool in this session;

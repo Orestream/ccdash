@@ -3,6 +3,7 @@
 package api
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -21,21 +22,30 @@ import (
 	"github.com/robinmalmstrom/ccdash/backend/internal/ws"
 )
 
+// UtilizationFetcher returns the Claude subscription rate-limit usage (the data
+// behind the CLI's /usage view). Behind an interface so it can be faked in tests.
+type UtilizationFetcher interface {
+	Fetch(ctx context.Context) (models.Utilization, error)
+}
+
 // Server holds the dependencies shared by all handlers.
 type Server struct {
 	store    *store.Store
 	mgr      *session.Manager
 	hub      *ws.Hub
+	util     UtilizationFetcher
 	version  string
 	upgrader websocket.Upgrader
 }
 
-// NewServer constructs a Server.
-func NewServer(st *store.Store, mgr *session.Manager, hub *ws.Hub, version string) *Server {
+// NewServer constructs a Server. util may be nil if subscription usage is
+// unavailable, in which case /api/usage/limits reports it as unconfigured.
+func NewServer(st *store.Store, mgr *session.Manager, hub *ws.Hub, util UtilizationFetcher, version string) *Server {
 	return &Server{
 		store:   st,
 		mgr:     mgr,
 		hub:     hub,
+		util:    util,
 		version: version,
 		upgrader: websocket.Upgrader{
 			ReadBufferSize:  1024,
@@ -88,6 +98,7 @@ func (s *Server) Router() http.Handler {
 		r.Get("/attachments/{id}", s.handleGetAttachment)
 
 		r.Get("/usage", s.handleUsageSummary)
+		r.Get("/usage/limits", s.handleUsageLimits)
 	})
 
 	r.Get("/ws", s.handleWS)
@@ -449,6 +460,22 @@ func (s *Server) handleUsageSummary(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, summary)
+}
+
+// handleUsageLimits returns the Claude subscription rate-limit usage (the /usage
+// view). The endpoint is undocumented and best-effort: failures map to 502 so the
+// dashboard can show "unavailable" without treating it as a server fault.
+func (s *Server) handleUsageLimits(w http.ResponseWriter, r *http.Request) {
+	if s.util == nil {
+		writeErr(w, http.StatusNotImplemented, "subscription usage not configured")
+		return
+	}
+	u, err := s.util.Fetch(r.Context())
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, u)
 }
 
 // --- websocket ---

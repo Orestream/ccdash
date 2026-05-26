@@ -14,6 +14,7 @@ import type {
   Session,
   UsageRecord,
   UsageSummary,
+  Utilization,
 } from '../types';
 
 export class ApiError extends Error {
@@ -205,4 +206,8 @@ export function getSessionUsage(
 
 export function getUsageSummary(signal?: AbortSignal): Promise<UsageSummary> {
   return request<UsageSummary>('/usage', { signal });
+}
+
+export function getUsageLimits(signal?: AbortSignal): Promise<Utilization> {
+  return request<Utilization>('/usage/limits', { signal });
 }

@@ -136,13 +136,45 @@ a {
 }
 .usage-stats {
   display: flex;
-  gap: 1.5rem;
+  gap: 1.75rem;
   flex: 1;
+  align-items: center;
 }
 .usage-stat {
   display: flex;
   flex-direction: column;
   line-height: 1.1;
+}
+.usage-meter {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  min-width: 9rem;
+  line-height: 1.1;
+}
+.usage-meter-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+.usage-track {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--border);
+  overflow: hidden;
+}
+.usage-fill {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--accent, #4f9cff);
+  transition: width 0.3s ease;
+}
+.usage-fill[data-warn='true'] {
+  background: #e0a23b;
+}
+.usage-reset {
+  font-size: 0.66rem;
 }
 .usage-label {
   font-size: 0.68rem;
