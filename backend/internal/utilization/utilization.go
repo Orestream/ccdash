@@ -28,21 +28,37 @@ const (
 	oauthBetaHeader  = "oauth-2025-04-20"
 	anthropicVersion = "2023-06-01"
 	defaultTTL       = 30 * time.Second
+	// After a failed upstream fetch we refuse to retry for this long, so a burst
+	// of dashboard polls (e.g. session.usage events) can't turn one failure into a
+	// request storm. A 429 backs off harder because the limit is account-wide and
+	// shared with the `claude` CLI — hammering it only keeps it tripped.
+	errBackoff       = 30 * time.Second
+	rateLimitBackoff = 2 * time.Minute
 )
 
+// errRateLimited marks an upstream 429 so callers can back off harder. It is the
+// error surfaced when the endpoint rate-limits us and we have no cached value.
+var errRateLimited = errors.New("usage endpoint: rate limited (HTTP 429)")
+
 // Fetcher retrieves subscription utilization, caching the result for a short TTL
-// so frequent dashboard polls don't hammer the endpoint. It is safe for
-// concurrent use.
+// so frequent dashboard polls don't hammer the endpoint. Crucially it also
+// rate-limits *attempts*: after a failure it serves the last good value (or the
+// error) until a backoff window elapses, instead of re-hitting the upstream on
+// every poll. It is safe for concurrent use.
 type Fetcher struct {
 	baseURL  string
 	credPath string
 	client   *http.Client
 	ttl      time.Duration
 
-	mu       sync.Mutex
-	cached   models.Utilization
-	cachedAt time.Time
-	hasCache bool
+	fetchMu sync.Mutex // serializes upstream calls so a burst collapses to one
+
+	mu          sync.Mutex
+	cached      models.Utilization
+	cachedAt    time.Time
+	hasCache    bool
+	nextAttempt time.Time // earliest time we may hit the upstream again
+	lastErr     error     // last upstream error (served when there is no cache)
 }
 
 // NewFetcher builds a Fetcher that reads the OAuth token from credPath (typically
@@ -56,31 +72,73 @@ func NewFetcher(credPath string) *Fetcher {
 	}
 }
 
-// Fetch returns the current utilization, serving a cached value within the TTL.
+// Fetch returns the current utilization. A fresh successful value (within the
+// TTL) is served from cache; otherwise it refreshes from upstream, but only if
+// it isn't inside a post-failure backoff window. While backing off it serves the
+// last good value if there is one, else the last error.
 func (f *Fetcher) Fetch(ctx context.Context) (models.Utilization, error) {
-	f.mu.Lock()
-	if f.hasCache && time.Since(f.cachedAt) < f.ttl {
-		u := f.cached
-		f.mu.Unlock()
-		return u, nil
+	if u, done, err := f.fromCache(); done {
+		return u, err
 	}
-	f.mu.Unlock()
+
+	// Collapse concurrent callers into a single upstream request.
+	f.fetchMu.Lock()
+	defer f.fetchMu.Unlock()
+
+	// Another goroutine may have refreshed (or just failed) while we waited.
+	if u, done, err := f.fromCache(); done {
+		return u, err
+	}
 
 	tok, err := readToken(f.credPath)
-	if err != nil {
-		return models.Utilization{}, err
+	if err == nil {
+		var raw rawUsage
+		raw, err = f.get(ctx, tok)
+		if err == nil {
+			u := raw.toModel(time.Now())
+			f.mu.Lock()
+			f.cached, f.cachedAt, f.hasCache, f.lastErr, f.nextAttempt =
+				u, time.Now(), true, nil, time.Time{}
+			f.mu.Unlock()
+			return u, nil
+		}
 	}
 
-	raw, err := f.get(ctx, tok)
-	if err != nil {
-		return models.Utilization{}, err
-	}
-
-	u := raw.toModel(time.Now())
+	// Failure: arm the backoff and serve the last good value rather than a blip.
 	f.mu.Lock()
-	f.cached, f.cachedAt, f.hasCache = u, time.Now(), true
-	f.mu.Unlock()
-	return u, nil
+	defer f.mu.Unlock()
+	f.lastErr = err
+	f.nextAttempt = time.Now().Add(backoffFor(err))
+	if f.hasCache {
+		return f.cached, nil
+	}
+	return models.Utilization{}, err
+}
+
+// fromCache returns (value, done, err). done is true when the call can be
+// answered without hitting upstream: either a fresh success or an active backoff
+// window. When backing off without any cached value, it returns the last error.
+func (f *Fetcher) fromCache() (models.Utilization, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	now := time.Now()
+	if f.hasCache && now.Sub(f.cachedAt) < f.ttl {
+		return f.cached, true, nil
+	}
+	if now.Before(f.nextAttempt) {
+		if f.hasCache {
+			return f.cached, true, nil
+		}
+		return models.Utilization{}, true, f.lastErr
+	}
+	return models.Utilization{}, false, nil
+}
+
+func backoffFor(err error) time.Duration {
+	if errors.Is(err, errRateLimited) {
+		return rateLimitBackoff
+	}
+	return errBackoff
 }
 
 // credFile is the slice of ~/.claude/.credentials.json we need.
@@ -139,10 +197,14 @@ func (f *Fetcher) get(ctx context.Context, token string) (rawUsage, error) {
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		if resp.StatusCode == http.StatusUnauthorized {
+		switch resp.StatusCode {
+		case http.StatusUnauthorized:
 			return raw, errors.New("usage endpoint: unauthorized (token expired? run claude to refresh)")
+		case http.StatusTooManyRequests:
+			return raw, errRateLimited
+		default:
+			return raw, fmt.Errorf("usage endpoint: %s", resp.Status)
 		}
-		return raw, fmt.Errorf("usage endpoint: %s", resp.Status)
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&raw); err != nil {
 		return raw, fmt.Errorf("decode usage: %w", err)

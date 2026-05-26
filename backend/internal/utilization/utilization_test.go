@@ -2,11 +2,15 @@ package utilization
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // sampleBody mirrors a real /api/oauth/usage response: utilization is already a
@@ -105,6 +109,105 @@ func TestFetchUnauthorized(t *testing.T) {
 
 	if _, err := f.Fetch(context.Background()); err == nil {
 		t.Fatal("expected error on 401, got nil")
+	}
+}
+
+func TestFetchBacksOffAfterFailure(t *testing.T) {
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+
+	f := NewFetcher(writeCred(t, "tok"))
+	f.baseURL = srv.URL
+
+	// First call hits upstream and gets 429; with no cache it surfaces the error.
+	_, err := f.Fetch(context.Background())
+	if !errors.Is(err, errRateLimited) {
+		t.Fatalf("first Fetch err = %v, want errRateLimited", err)
+	}
+	// Subsequent calls are inside the backoff window: no further upstream hits.
+	for i := 0; i < 5; i++ {
+		if _, err := f.Fetch(context.Background()); !errors.Is(err, errRateLimited) {
+			t.Fatalf("Fetch %d err = %v, want errRateLimited", i, err)
+		}
+	}
+	if calls != 1 {
+		t.Errorf("endpoint called %d times, want 1 (backoff caps retries)", calls)
+	}
+}
+
+func TestFetchServesStaleCacheOnError(t *testing.T) {
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		if calls == 1 {
+			_, _ = w.Write([]byte(sampleBody))
+			return
+		}
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+
+	f := NewFetcher(writeCred(t, "tok"))
+	f.baseURL = srv.URL
+	f.ttl = 0 // every call is considered stale, so each attempts a refresh
+
+	// Prime the cache with a good value.
+	first, err := f.Fetch(context.Background())
+	if err != nil || first.Session == nil || first.Session.UsedPercent != 3.0 {
+		t.Fatalf("prime Fetch = %+v, err = %v", first, err)
+	}
+
+	// Next call attempts upstream, hits 429, and serves the stale cache (no error).
+	got, err := f.Fetch(context.Background())
+	if err != nil {
+		t.Fatalf("Fetch after 429 returned error %v, want stale cache", err)
+	}
+	if got.Session == nil || got.Session.UsedPercent != 3.0 {
+		t.Fatalf("stale value = %+v, want UsedPercent 3.0", got.Session)
+	}
+	if calls != 2 {
+		t.Fatalf("endpoint called %d times, want 2", calls)
+	}
+
+	// A further call is inside the backoff window and must not hit upstream again.
+	if _, err := f.Fetch(context.Background()); err != nil {
+		t.Fatalf("backoff Fetch returned error %v", err)
+	}
+	if calls != 2 {
+		t.Errorf("endpoint called %d times, want 2 (backoff holds)", calls)
+	}
+}
+
+func TestFetchSingleFlightsConcurrentCalls(t *testing.T) {
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		time.Sleep(20 * time.Millisecond) // widen the race window
+		_, _ = w.Write([]byte(sampleBody))
+	}))
+	defer srv.Close()
+
+	f := NewFetcher(writeCred(t, "tok"))
+	f.baseURL = srv.URL
+
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := f.Fetch(context.Background()); err != nil {
+				t.Errorf("concurrent Fetch: %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+
+	if n := atomic.LoadInt32(&calls); n != 1 {
+		t.Errorf("endpoint called %d times, want 1 (single-flight)", n)
 	}
 }
 
