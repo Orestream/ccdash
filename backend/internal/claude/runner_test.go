@@ -3,8 +3,55 @@ package claude
 import (
 	"encoding/base64"
 	"encoding/json"
+	"slices"
+	"strings"
 	"testing"
 )
+
+// hasFlag reports whether args contains "--name value" as adjacent elements.
+func hasFlag(args []string, name, value string) bool {
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == name && args[i+1] == value {
+			return true
+		}
+	}
+	return false
+}
+
+// TestBuildArgsEnablesInteractivePermissions guards the flag that makes the CLI
+// delegate tool-permission decisions to us over the stream-json control channel.
+// Without it, -p print mode auto-denies every permission-gated tool and no
+// approval request ever reaches the dashboard.
+func TestBuildArgsEnablesInteractivePermissions(t *testing.T) {
+	args := buildArgs(StartRequest{})
+	if !hasFlag(args, "--permission-prompt-tool", "stdio") {
+		t.Fatalf("missing --permission-prompt-tool stdio; got %s", strings.Join(args, " "))
+	}
+	for _, want := range []string{"-p", "--input-format", "stream-json", "--output-format", "--verbose"} {
+		if !slices.Contains(args, want) {
+			t.Errorf("args missing %q; got %s", want, strings.Join(args, " "))
+		}
+	}
+}
+
+func TestBuildArgsOptionalFlags(t *testing.T) {
+	args := buildArgs(StartRequest{Model: "claude-opus-4-7", PermissionMode: "default", ResumeSessionID: "sess-9"})
+	if !hasFlag(args, "--model", "claude-opus-4-7") {
+		t.Errorf("missing --model; got %s", strings.Join(args, " "))
+	}
+	if !hasFlag(args, "--permission-mode", "default") {
+		t.Errorf("missing --permission-mode; got %s", strings.Join(args, " "))
+	}
+	if !hasFlag(args, "--resume", "sess-9") {
+		t.Errorf("missing --resume; got %s", strings.Join(args, " "))
+	}
+
+	// Empty optionals must not appear at all.
+	bare := buildArgs(StartRequest{})
+	if slices.Contains(bare, "--model") || slices.Contains(bare, "--resume") || slices.Contains(bare, "--permission-mode") {
+		t.Errorf("unexpected optional flag in %s", strings.Join(bare, " "))
+	}
+}
 
 // one asserts parseLine produced exactly a single event and returns it.
 func one(t *testing.T, line string) Event {

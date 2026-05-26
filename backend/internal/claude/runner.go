@@ -132,14 +132,22 @@ func NewCLIRunner(bin string) *CLIRunner {
 	return &CLIRunner{Bin: bin}
 }
 
-// Start implements Runner by spawning a streaming claude process.
-func (r *CLIRunner) Start(ctx context.Context, req StartRequest) (Session, error) {
+// buildArgs assembles the `claude` CLI arguments for a streaming session.
+//
+// --permission-prompt-tool stdio is what makes interactive approvals possible:
+// it tells the CLI to delegate tool-permission decisions to us over the
+// stream-json control channel (emitting can_use_tool control_requests) instead
+// of auto-denying them, which is what -p print mode does without it. Without
+// this flag every permission-gated tool is silently blocked and no approval
+// request ever reaches the dashboard.
+func buildArgs(req StartRequest) []string {
 	args := []string{
 		"-p",
 		"--input-format", "stream-json",
 		"--output-format", "stream-json",
 		"--include-partial-messages",
 		"--verbose",
+		"--permission-prompt-tool", "stdio",
 	}
 	if req.Model != "" {
 		args = append(args, "--model", req.Model)
@@ -150,6 +158,12 @@ func (r *CLIRunner) Start(ctx context.Context, req StartRequest) (Session, error
 	if req.ResumeSessionID != "" {
 		args = append(args, "--resume", req.ResumeSessionID)
 	}
+	return args
+}
+
+// Start implements Runner by spawning a streaming claude process.
+func (r *CLIRunner) Start(ctx context.Context, req StartRequest) (Session, error) {
+	args := buildArgs(req)
 
 	ctx, cancel := context.WithCancel(ctx)
 	cmd := exec.CommandContext(ctx, r.Bin, args...)
