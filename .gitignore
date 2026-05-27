@@ -3,6 +3,7 @@
 /backend/*.db
 /backend/*.db-shm
 /backend/*.db-wal
+/backend/internal/web/dist/
 *.test
 *.out
 coverage.txt
@@ -16,6 +17,7 @@ node_modules/
 # --- Claude / local ---
 .claude/settings.local.json
 .claude/auto-commit.log
+.claude/logs/
 
 # --- Editors / OS ---
 .DS_Store

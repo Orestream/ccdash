@@ -25,7 +25,7 @@ import (
 var version = "0.1.0-dev"
 
 func main() {
-	addr := envOr("CCDASH_ADDR", ":10001")
+	addr := envOr("CCDASH_ADDR", ":10000")
 	dbPath := envOr("CCDASH_DB", "ccdash.db")
 	claudeBin := envOr("CCDASH_CLAUDE_BIN", "claude")
 	credPath := envOr("CCDASH_CRED_PATH", defaultCredPath())

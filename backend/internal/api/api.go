@@ -57,10 +57,14 @@ func NewServer(st *store.Store, mgr *session.Manager, hub *ws.Hub, util Utilizat
 }
 
 // Router builds the chi router with middleware and routes.
+//
+// Layout: the request logger is scoped to the /api and /ws routes so the
+// frontend handler (which in dev proxies every JS module and HMR poll to Vite)
+// doesn't drown the backend log stream. RequestID, Recoverer, and CORS still
+// apply everywhere.
 func (s *Server) Router() http.Handler {
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
-	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   []string{"http://localhost:10000", "http://127.0.0.1:10000"},
@@ -70,38 +74,48 @@ func (s *Server) Router() http.Handler {
 		MaxAge:           300,
 	}))
 
-	r.Route("/api", func(r chi.Router) {
-		r.Get("/health", s.handleHealth)
+	r.Group(func(r chi.Router) {
+		r.Use(middleware.Logger)
 
-		r.Route("/projects", func(r chi.Router) {
-			r.Get("/", s.handleListProjects)
-			r.Post("/", s.handleCreateProject)
-			r.Get("/{id}", s.handleGetProject)
-			r.Delete("/{id}", s.handleDeleteProject)
-			r.Get("/{id}/sessions", s.handleListProjectSessions)
-			r.Post("/{id}/sessions", s.handleCreateSession)
+		r.Route("/api", func(r chi.Router) {
+			r.Get("/health", s.handleHealth)
+
+			r.Route("/projects", func(r chi.Router) {
+				r.Get("/", s.handleListProjects)
+				r.Post("/", s.handleCreateProject)
+				r.Get("/{id}", s.handleGetProject)
+				r.Delete("/{id}", s.handleDeleteProject)
+				r.Get("/{id}/sessions", s.handleListProjectSessions)
+				r.Post("/{id}/sessions", s.handleCreateSession)
+			})
+
+			r.Route("/sessions", func(r chi.Router) {
+				r.Get("/", s.handleListSessions)
+				r.Get("/{id}", s.handleGetSession)
+				r.Get("/{id}/messages", s.handleListMessages)
+				r.Post("/{id}/messages", s.handleSendMessage)
+				r.Post("/{id}/stop", s.handleStopSession)
+				r.Patch("/{id}/mode", s.handleSetMode)
+				r.Patch("/{id}/title", s.handleRenameSession)
+				r.Get("/{id}/permissions", s.handleListPermissions)
+				r.Post("/{id}/permissions/{requestId}", s.handleRespondPermission)
+				r.Get("/{id}/usage", s.handleSessionUsage)
+			})
+
+			r.Get("/attachments/{id}", s.handleGetAttachment)
+
+			r.Get("/usage", s.handleUsageSummary)
+			r.Get("/usage/limits", s.handleUsageLimits)
 		})
 
-		r.Route("/sessions", func(r chi.Router) {
-			r.Get("/", s.handleListSessions)
-			r.Get("/{id}", s.handleGetSession)
-			r.Get("/{id}/messages", s.handleListMessages)
-			r.Post("/{id}/messages", s.handleSendMessage)
-			r.Post("/{id}/stop", s.handleStopSession)
-			r.Patch("/{id}/mode", s.handleSetMode)
-			r.Patch("/{id}/title", s.handleRenameSession)
-			r.Get("/{id}/permissions", s.handleListPermissions)
-			r.Post("/{id}/permissions/{requestId}", s.handleRespondPermission)
-			r.Get("/{id}/usage", s.handleSessionUsage)
-		})
-
-		r.Get("/attachments/{id}", s.handleGetAttachment)
-
-		r.Get("/usage", s.handleUsageSummary)
-		r.Get("/usage/limits", s.handleUsageLimits)
+		r.Get("/ws", s.handleWS)
 	})
 
-	r.Get("/ws", s.handleWS)
+	// Everything else: the frontend (dev = Vite reverse proxy, prod = embedded
+	// bundle with SPA fallback). The handler is constructed once per request
+	// via frontendHandler() — cheap in prod, and lets dev pick up its config
+	// without restart.
+	r.NotFound(s.frontendHandler().ServeHTTP)
 	return r
 }
 

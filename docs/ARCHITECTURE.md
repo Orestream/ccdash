@@ -1,24 +1,44 @@
 # Architecture
 
-ccdash is a two-process app: a Go backend that owns all state and talks to the
-`claude` CLI, and a React SPA that renders it. They communicate over a JSON REST
-API plus a WebSocket for live push. The contract is in [`API.md`](./API.md).
+ccdash is a single-port app: the Go backend owns `:10000` and serves both the
+API and the React SPA — the browser only ever talks to one origin. The same Go
+codebase has two build modes:
+
+- **Default (no tag) = dev.** Non-`/api`/`/ws` requests are reverse-proxied to
+  the Vite dev server on an internal port (`:10001`). HMR tunnels through the
+  proxy, so the browser still gets sub-second updates without seeing Vite.
+- **`-tags prod` = release.** The built `frontend/dist` is embedded via
+  `//go:embed all:dist` in `backend/internal/web` and served by `spaHandler`,
+  with SPA fallback to `index.html` for unknown paths. The output is a single
+  self-contained binary.
+
+Either way the API + WebSocket contract is the one in [`API.md`](./API.md).
 
 ```
-                          ┌─────────────────────────────────────────────┐
-   Browser (React :10000) │                  backend :10001             │
-  ┌──────────────────┐    │  ┌──────────┐   ┌───────────┐   ┌─────────┐ │
-  │ Sidebar / Session│    │  │  api     │──▶│  session  │──▶│ claude  │ │──▶ `claude` CLI
-  │ List / View      │◀──▶│  │ (chi)    │   │  Manager  │   │ Runner  │ │    (one process
-  │ UsageBar         │    │  └────┬─────┘   └─────┬─────┘   └─────────┘ │     per run)
-  └────────┬─────────┘    │       │               │                     │
-           │  REST /api   │       ▼               ▼                     │
-           │──────────────┼──▶ ┌──────┐      ┌─────────┐                │
-           │  WS   /ws    │    │store │      │  ws.Hub │───broadcast────┤
-           │◀─────────────┼────│SQLite│      └─────────┘   (status,     │
-           └──────────────┘    └──────┘                     messages,   │
-                          │                                 usage)      │
-                          └─────────────────────────────────────────────┘
+            Browser (one origin: http://localhost:10000)
+            ┌──────────────────┐
+            │  React SPA       │
+            │  Sidebar/Session │
+            │  UsageBar / …    │
+            └────┬─────┬───────┘
+       REST /api │     │ WS /ws
+                 ▼     ▼
+   ┌─────────────────────────────────────────────────────────┐
+   │              backend :10000 (chi router)                │
+   │  ┌──────────┐   ┌───────────┐   ┌─────────┐             │
+   │  │  /api    │──▶│  session  │──▶│ claude  │──▶ `claude` CLI
+   │  │  /ws     │   │  Manager  │   │ Runner  │   (one process per run)
+   │  └────┬─────┘   └─────┬─────┘   └─────────┘             │
+   │       ▼               ▼                                 │
+   │   ┌──────┐        ┌─────────┐                           │
+   │   │store │        │  ws.Hub │── broadcast (status,      │
+   │   │SQLite│        └─────────┘   messages, usage)        │
+   │   └──────┘                                              │
+   │                                                         │
+   │  NotFound ──▶ frontendHandler:                          │
+   │     dev  → httputil.ReverseProxy → Vite :10001 (HMR)    │
+   │     prod → spaHandler over //go:embed dist/             │
+   └─────────────────────────────────────────────────────────┘
 ```
 
 ## Backend packages
@@ -55,11 +75,24 @@ API plus a WebSocket for live push. The contract is in [`API.md`](./API.md).
 - **`api`** — chi router. REST handlers are thin wrappers over `store`/`session`;
   `/ws` upgrades to a WebSocket, subscribes to the hub, and pumps events to the
   client (with periodic pings and a reader goroutine to detect disconnects).
+  The request logger is scoped to `/api` + `/ws` so the dev frontend handler
+  (which proxies every JS module and HMR poll to Vite) doesn't drown backend
+  logs. The frontend handler is a build-tagged file: `frontend_dev.go`
+  (`!prod`) returns an `httputil.ReverseProxy` to `http://localhost:10001`;
+  `frontend_prod.go` (`prod`) returns `spaHandler` over the embedded FS from
+  `internal/web`. `spaHandler` is plain `fs.FS` + `http.FileServer` with a
+  fallback to `index.html` for client-routed paths and is unit-tested via
+  `fstest.MapFS` — no build tag, no real `dist/` required.
+- **`web`** — staging dir for the production frontend. `make build` copies
+  `frontend/dist` into `backend/internal/web/dist`, then `go build -tags prod`
+  pulls it into `Dist embed.FS`. The `dist/` is gitignored; only the package's
+  Go files (a doc file and the build-tagged embed file) are checked in.
 
 ## Frontend
 
-- **`api/client.ts`** — typed `fetch` wrapper; uses relative `/api/...` URLs
-  proxied by Vite to the backend.
+- **`api/client.ts`** — typed `fetch` wrapper; uses relative `/api/...` URLs.
+  Because Go now owns the user-facing port, requests go straight to the
+  backend (no Vite proxy in front).
 - **`hooks/useWebSocket.ts`** — single connection to `/ws`, parses `WsEvent`,
   reconnects with backoff, and fans events out to subscribers.
 - **`hooks/useSessions.ts`** — loads sessions over REST and merges live
@@ -83,6 +116,13 @@ API plus a WebSocket for live push. The contract is in [`API.md`](./API.md).
   parser independently testable.
 - **Hub of byte slices** — the live layer doesn't care about WebSocket specifics
   and is easy to test.
+- **Default build = dev** — the proxy variant compiles without a built
+  `dist/`, so `make test`, `go build ./...`, and the auto-commit hook all stay
+  green on a fresh checkout. `-tags prod` (used only by `make build`) is the
+  one path that requires `npm run build` + a staged `internal/web/dist`.
+- **`gow` for backend reload** — incremental compile via Go's build cache, so
+  edits cycle in well under a second without restarting Vite (frontend state
+  survives backend restarts because the two are separate processes).
 
 ## Known gaps (skeleton)
 
