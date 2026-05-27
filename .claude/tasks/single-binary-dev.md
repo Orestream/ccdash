@@ -10,14 +10,19 @@ files agents can read.
 
 ## Core idea: flip the proxy direction
 
-Today Vite owns the port (`:10000`) and proxies `/api` + `/ws` back to Go
-(`:10001`). Reverse that: **Go owns the single port (`:10001`)** and decides how
-to serve the frontend based on a build tag.
+Today Vite owns the user-facing port (`:10000`) and proxies `/api` + `/ws` back
+to Go (`:10001`). Reverse that: **Go owns the single port — and we move Go to
+`:10000`** (the port you already open in the browser). Vite moves to an internal
+port (`:5173`). Go then decides how to serve the frontend based on a build tag.
+
+> This means changing the default `CCDASH_ADDR` in `backend/cmd/ccdash/main.go`
+> from `:10001` to `:10000`, so both the dev process and the release binary
+> listen on the single user-facing port.
 
 - **Default build (no tag) = dev:** Go reverse-proxies every non-`/api`, non-`/ws`
   request to the Vite dev server on an internal port (`:5173`). Vite still
   provides HMR; it's just no longer user-facing. The browser only ever talks to
-  `:10001`.
+  `:10000`.
 - **`-tags prod` = release:** Go serves the embedded `frontend/dist` via
   `//go:embed`, with SPA fallback to `index.html`. `go build -tags prod` →
   one self-contained binary, one port.
@@ -33,7 +38,7 @@ green on a fresh checkout.
 | Goal | Mechanism |
 |------|-----------|
 | Single binary (prod) | `//go:embed all:dist` + SPA fallback |
-| One port (dev too) | Go binds `:10001`; Vite is internal, proxied through |
+| One port (dev too) | Go binds `:10000`; Vite is internal, proxied through |
 | Live frontend, no rebuild | Vite HMR tunnels through Go's reverse proxy |
 | Live backend, no full rebuild | `watchexec` restarts `go run`; Go compiles incrementally |
 | Easy logs | one script prefixes + tees both streams to files |
@@ -148,11 +153,11 @@ Considerations:
   build a separate sub-router for `/api` + `/ws` that has the logger, and attach
   the frontend handler at the top level without it. Keep `Recoverer`.
 - **CORS:** once Go serves the page, the app calls `/api` and `/ws` same-origin
-  (`:10001`), so the CORS block (api.go:65) is no longer exercised in normal
+  (`:10000`), so the CORS block (api.go:65) is no longer exercised in normal
   use. Leave it or simplify; not required for this task.
 - Confirm the REST client (`src/api/`) and `useWebSocket` use **relative** URLs
-  (`/api`, `/ws`). They should already; no change expected. If any hardcodes
-  `:10001`/`:10000`, make it relative.
+  (`/api`, `/ws`). They should already; no change expected. If any hardcodes a
+  port, make it relative.
 
 ### 3. Vite config
 
@@ -164,7 +169,7 @@ through Go's port:
 server: {
   port: 5173,
   strictPort: true,
-  hmr: { clientPort: 10001 }, // browser loads from :10001, so HMR connects there
+  hmr: { clientPort: 10000 }, // browser loads from :10000, so HMR connects there
 },
 ```
 
@@ -185,7 +190,7 @@ build: build-frontend ## Build the single production binary (embeds frontend)
 - Add a one-command dev target:
 
 ```make
-dev: ## Run backend + frontend behind one port (:10001) with unified logs
+dev: ## Run backend + frontend behind one port (:10000) with unified logs
 	./scripts/dev.sh
 ```
 
@@ -198,7 +203,7 @@ into `.claude/logs/`:
 
 ```bash
 #!/usr/bin/env bash
-# Run backend + frontend behind a single port (:10001).
+# Run backend + frontend behind a single port (:10000).
 # Combined stdout is prefixed [backend]/[frontend]; raw per-project logs go to
 # .claude/logs/{backend,frontend}.log for agents to read.
 set -uo pipefail
@@ -269,7 +274,8 @@ And ignore the staged embed dir if you use the `internal/web/dist` copy:
 
 ## Verify by hand
 
-1. `make dev` → open `http://localhost:10001`. App loads; no `:10000` anywhere.
+1. `make dev` → open `http://localhost:10000`. App loads; the browser never
+   talks to `:5173`.
 2. Edit a React component → HMR updates the browser instantly (no full reload,
    no rebuild). `[frontend]` lines show the HMR update.
 3. Edit a `.go` file → `[backend]` logs show watchexec restarting; the API is
@@ -277,12 +283,12 @@ And ignore the staged embed dir if you use the `internal/web/dist` copy:
 4. `tail -f .claude/logs/backend.log` and `.../frontend.log` show clean
    per-project streams.
 5. `make build && ./backend/ccdash` → single binary serves the app + API on
-   `:10001` with **no Vite running**. Deep-link a client route → SPA fallback
+   `:10000` with **no Vite running**. Deep-link a client route → SPA fallback
    serves it.
 
 ## Done criteria
 
-- [ ] One user-facing port (`:10001`) in both dev and prod.
+- [ ] One user-facing port (`:10000`) in both dev and prod.
 - [ ] `make build` produces one binary that serves embedded frontend + API.
 - [ ] `make dev`: frontend HMR + backend auto-restart, no full-project rebuilds.
 - [ ] `make dev` streams prefixed combined logs and writes
