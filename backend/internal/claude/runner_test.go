@@ -123,16 +123,21 @@ func TestParseLineAssistantWithTool(t *testing.T) {
 	}
 }
 
+// permission_suggestions arrives as an array of structured objects (verified
+// against claude 2.1.152), not strings. Decoding it must not fail the whole-line
+// unmarshal — otherwise the request is dropped and the claude process blocks
+// forever ("processing" with no approval ever shown).
 func TestParseLinePermissionRequest(t *testing.T) {
-	ev := one(t, `{"type":"control_request","request_id":"req_1","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"git status"},"permission_suggestions":["allow","deny"]}}`)
+	ev := one(t, `{"type":"control_request","request_id":"req_1","request":{"subtype":"can_use_tool","tool_name":"Write","input":{"file_path":"/repo/a.go","content":"x"},"permission_suggestions":[{"type":"setMode","mode":"acceptEdits","destination":"session"}]}}`)
 	if ev.Kind != KindPermission {
 		t.Fatalf("expected permission event, got %+v", ev)
 	}
-	if ev.RequestID != "req_1" || ev.ToolName != "Bash" {
+	if ev.RequestID != "req_1" || ev.ToolName != "Write" {
 		t.Fatalf("unexpected permission fields: %+v", ev)
 	}
-	if len(ev.Suggestions) != 2 {
-		t.Fatalf("expected 2 suggestions, got %v", ev.Suggestions)
+	var m map[string]any
+	if err := json.Unmarshal(ev.ToolInput, &m); err != nil || m["file_path"] != "/repo/a.go" {
+		t.Fatalf("tool input not preserved: %s err=%v", ev.ToolInput, err)
 	}
 }
 

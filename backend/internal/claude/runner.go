@@ -11,10 +11,13 @@
 // requests (the control protocol). The Runner interface lets the session
 // manager inject fakes in tests.
 //
-// NOTE: the exact stdin/stdout shapes for the control protocol below are based
-// on the documented streaming-JSON format and may need adjustment after testing
-// against a specific claude version. They are isolated to parseLine / Send /
-// Respond so adjustments stay local.
+// The control-protocol shapes below were verified against claude CLI 2.1.152:
+// a permission request arrives as a top-level {"type":"control_request",
+// "request_id":...,"request":{"subtype":"can_use_tool","tool_name":...,
+// "input":{...},"permission_suggestions":[...]}} and is answered with a
+// control_response carrying the same request_id. --permission-prompt-tool stdio
+// is what makes the CLI emit these instead of blocking; no initialize handshake
+// is required. The shapes are isolated to parseLine / Send / Respond.
 package claude
 
 import (
@@ -357,10 +360,15 @@ type rawMessage struct {
 }
 
 type rawPermission struct {
-	Subtype     string          `json:"subtype"`
-	ToolName    string          `json:"tool_name"`
-	Input       json.RawMessage `json:"input"`
-	Suggestions []string        `json:"permission_suggestions"`
+	Subtype  string          `json:"subtype"`
+	ToolName string          `json:"tool_name"`
+	Input    json.RawMessage `json:"input"`
+	// permission_suggestions is an array of structured objects, e.g.
+	// [{"type":"setMode","mode":"acceptEdits","destination":"session"}] — NOT a
+	// list of strings. We don't surface them yet, so capture them raw: decoding
+	// into []string would fail the whole-line unmarshal and silently drop the
+	// permission request, leaving the claude process blocked forever.
+	Suggestions json.RawMessage `json:"permission_suggestions"`
 }
 
 type rawEvent struct {
@@ -406,12 +414,13 @@ func parseLine(line []byte) []Event {
 		if raw.Request == nil || raw.Request.Subtype != "can_use_tool" {
 			return nil
 		}
+		// Suggestions are left empty: the session manager defaults them to
+		// allow/allow_always/deny, which is what the approval UI offers.
 		return []Event{{
-			Kind:        KindPermission,
-			RequestID:   raw.RequestID,
-			ToolName:    raw.Request.ToolName,
-			ToolInput:   raw.Request.Input,
-			Suggestions: raw.Request.Suggestions,
+			Kind:      KindPermission,
+			RequestID: raw.RequestID,
+			ToolName:  raw.Request.ToolName,
+			ToolInput: raw.Request.Input,
 		}}
 
 	case "result":
