@@ -40,7 +40,7 @@ green on a fresh checkout.
 | Single binary (prod) | `//go:embed all:dist` + SPA fallback |
 | One port (dev too) | Go binds `:10000`; Vite is internal, proxied through |
 | Live frontend, no rebuild | Vite HMR tunnels through Go's reverse proxy |
-| Live backend, no full rebuild | `watchexec` restarts `go run`; Go compiles incrementally |
+| Live backend, no full rebuild | `gow` reruns `go run`; Go compiles incrementally (build cache) |
 | Easy logs | one script prefixes + tees both streams to files |
 
 ---
@@ -177,6 +177,20 @@ Remove the `proxy` block. The `test` block stays as-is.
 
 ### 4. Makefile
 
+- Extend `setup` to install the dev toolchain — the `gow` watcher plus frontend
+  libs — alongside the existing Go module download:
+
+```make
+setup: ## Install all dependencies (backend modules, gow watcher, frontend libs)
+	cd $(BACKEND) && go mod download
+	go install github.com/mitranim/gow@latest   # backend live-reload watcher
+	cd $(FRONTEND) && npm install
+```
+
+> `go install` drops `gow` in `$(go env GOBIN)` (or `$GOPATH/bin`); ensure that's
+> on `PATH`. The user already has `gow` installed — this recipe is for fresh
+> checkouts / other machines, and is idempotent.
+
 - `build` must build the frontend, stage `dist` where the embed expects it, then
   build with `-tags prod`:
 
@@ -215,9 +229,9 @@ mkdir -p "$LOGDIR"
 # Tear the whole process group down on Ctrl-C / exit.
 trap 'trap - INT TERM EXIT; kill 0' INT TERM EXIT
 
-# Backend: watchexec restarts `go run` on .go changes (incremental compile).
+# Backend: gow reruns `go run` on .go changes (incremental compile via build cache).
 (
-  cd backend && exec watchexec -r -e go -- go run ./cmd/ccdash
+  cd backend && exec gow run ./cmd/ccdash
 ) 2>&1 | tee "$LOGDIR/backend.log" | sed -u 's/^/[backend] /' &
 
 # Frontend: Vite dev server (HMR) on the internal port; Go proxies to it.
@@ -234,9 +248,10 @@ Notes:
 - `sed -u` keeps it line-buffered. If Vite/Go output still batches when piped,
   wrap the producer in `stdbuf -oL -eL` (or run under a PTY) — note this in the
   script if you hit it.
-- `watchexec` is the backend file-watcher. Alternatives if unavailable: `air`,
-  `wgo run ./cmd/ccdash`, or `find ... | entr -r`. Document the chosen dep in
-  `make setup` / CLAUDE.md and the Nix env if pinned.
+- `gow` ([mitranim/gow](https://github.com/mitranim/gow)) is the backend
+  file-watcher; it watches the cwd (`backend/`) recursively for `.go` changes
+  and reruns. `make setup` installs it via `go install` (step 4). Don't pass
+  `-c` (clear-screen) — it would wipe the combined log view.
 - `chmod +x scripts/dev.sh`.
 
 ### 6. `.gitignore`
@@ -278,7 +293,7 @@ And ignore the staged embed dir if you use the `internal/web/dist` copy:
    talks to `:5173`.
 2. Edit a React component → HMR updates the browser instantly (no full reload,
    no rebuild). `[frontend]` lines show the HMR update.
-3. Edit a `.go` file → `[backend]` logs show watchexec restarting; the API is
+3. Edit a `.go` file → `[backend]` logs show gow rerunning; the API is
    back within ~1s. Frontend state survives (separate process).
 4. `tail -f .claude/logs/backend.log` and `.../frontend.log` show clean
    per-project streams.
