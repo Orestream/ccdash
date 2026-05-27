@@ -47,6 +47,18 @@ func (h *Hub) Unsubscribe(ch chan []byte) {
 	h.mu.Unlock()
 }
 
+// Close drops every subscriber and closes their channels. Used at shutdown so
+// the WebSocket writer goroutines return promptly (which in turn closes the
+// underlying conn, unblocking the reader). Idempotent.
+func (h *Hub) Close() {
+	h.mu.Lock()
+	for ch := range h.subs {
+		delete(h.subs, ch)
+		close(ch)
+	}
+	h.mu.Unlock()
+}
+
 // Broadcast marshals an event and delivers it to every subscriber. Slow
 // consumers whose buffer is full are skipped rather than blocking the caller.
 func (h *Hub) Broadcast(eventType string, payload any) {

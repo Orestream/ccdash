@@ -53,17 +53,28 @@ func main() {
 		}
 	}()
 
-	// Graceful shutdown on SIGINT/SIGTERM.
-	stop := make(chan os.Signal, 1)
+	// Shutdown on SIGINT/SIGTERM. We want this to feel near-instant: WebSocket
+	// connections are hijacked, so http.Server.Shutdown can't drain them on its
+	// own — closing the hub closes each writer's channel, which unwinds the
+	// writer goroutine, which closes the underlying conn, which fails the
+	// reader. http.Server.Close() then evicts anything still hanging on. A
+	// second signal is treated as a hard exit so the user is never stuck.
+	stop := make(chan os.Signal, 2)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 	<-stop
-
 	log.Println("shutting down...")
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+
+	go func() {
+		<-stop
+		log.Println("force quit")
+		os.Exit(130)
+	}()
+
+	hub.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
-	if err := httpServer.Shutdown(ctx); err != nil {
-		log.Printf("shutdown error: %v", err)
-	}
+	_ = httpServer.Shutdown(ctx)
+	_ = httpServer.Close()
 }
 
 func envOr(key, fallback string) string {
