@@ -160,8 +160,11 @@ func (m *Manager) SendMessage(sessionID, content string, images []InboundImage) 
 
 // RespondPermission answers a pending tool-permission request. allow approves
 // it; always (with allow) auto-approves the same tool for the rest of the
-// session; message is shown to claude on deny.
-func (m *Manager) RespondPermission(sessionID, requestID string, allow, always bool, message string) error {
+// session; message is shown to claude on deny. answers carries user-supplied
+// values for tools whose result is collected through the permission dialog
+// (notably AskUserQuestion) — when non-empty and allowed, they are merged into
+// the tool's updatedInput so the SDK forwards them to the model.
+func (m *Manager) RespondPermission(sessionID, requestID string, allow, always bool, message string, answers map[string]string) error {
 	m.mu.Lock()
 	ls := m.live[sessionID]
 	m.mu.Unlock()
@@ -183,10 +186,14 @@ func (m *Manager) RespondPermission(sessionID, requestID string, allow, always b
 	ls.mu.Unlock()
 
 	dec := claude.DecisionDeny
+	input := pp.input
 	if allow {
 		dec = claude.DecisionAllow
+		if len(answers) > 0 {
+			input = mergeAnswers(pp.input, answers)
+		}
 	}
-	if err := ls.cs.Respond(requestID, dec, pp.input, message); err != nil {
+	if err := ls.cs.Respond(requestID, dec, input, message); err != nil {
 		return err
 	}
 
@@ -661,6 +668,32 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "…"
+}
+
+// mergeAnswers folds user-supplied answers into a tool's original input under
+// the "answers" key. Used to ship AskUserQuestion responses back to the SDK via
+// the can_use_tool channel: when behavior=allow's updatedInput carries
+// {questions, answers: {<question>: <selected label>}}, the SDK forwards those
+// answers to the model as the tool result. The original input shape is
+// preserved; if it is not a JSON object we fall back to raw {"answers": …} so
+// the answer is at least present (even though the model will see a partial
+// input).
+func mergeAnswers(original json.RawMessage, answers map[string]string) json.RawMessage {
+	var obj map[string]any
+	if len(original) > 0 {
+		if err := json.Unmarshal(original, &obj); err != nil {
+			obj = nil
+		}
+	}
+	if obj == nil {
+		obj = map[string]any{}
+	}
+	obj["answers"] = answers
+	out, err := json.Marshal(obj)
+	if err != nil {
+		return original
+	}
+	return out
 }
 
 // titleFromMessage derives a session title from a user message: its first

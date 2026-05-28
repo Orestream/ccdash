@@ -189,4 +189,9 @@ export interface SendMessageInput {
 export interface RespondPermissionInput {
   decision: PermissionDecision;
   message?: string;
+  // answers ships user selections for tools whose result is collected through
+  // the permission dialog (notably AskUserQuestion): question text → selected
+  // option label. For multi-select questions the client joins selected labels
+  // with ", " before sending. Ignored unless decision is "allow".
+  answers?: Record<string, string>;
 }

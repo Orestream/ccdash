@@ -204,7 +204,7 @@ func TestPermissionAllowAlways(t *testing.T) {
 		t.Fatalf("unexpected pending: %+v", pending)
 	}
 
-	if err := mgr.RespondPermission(sess.ID, "req_1", true, true, ""); err != nil {
+	if err := mgr.RespondPermission(sess.ID, "req_1", true, true, "", nil); err != nil {
 		t.Fatalf("respond: %v", err)
 	}
 	if len(mgr.PendingPermissions(sess.ID)) != 0 {
@@ -239,7 +239,7 @@ func TestPermissionDeny(t *testing.T) {
 	fs.emit(claude.Event{Kind: claude.KindPermission, RequestID: "req_1", ToolName: "Bash", ToolInput: json.RawMessage(`{"command":"rm -rf /"}`)})
 	waitForStatus(t, st, sess.ID, models.StatusAwaitingApproval)
 
-	if err := mgr.RespondPermission(sess.ID, "req_1", false, false, "nope"); err != nil {
+	if err := mgr.RespondPermission(sess.ID, "req_1", false, false, "nope", nil); err != nil {
 		t.Fatalf("respond: %v", err)
 	}
 	fs.done()
@@ -251,11 +251,50 @@ func TestPermissionDeny(t *testing.T) {
 	}
 }
 
+func TestPermissionAllowWithAnswers(t *testing.T) {
+	// AskUserQuestion answers ride back on the can_use_tool channel as the
+	// allowed tool's updatedInput. Verify the manager merges them under
+	// "answers" while keeping the original question payload intact.
+	fs := newFakeSession()
+	mgr, st, sess := setup(t, &fakeRunner{sess: fs})
+
+	_, _ = mgr.SendMessage(sess.ID, "ask me", nil)
+	orig := json.RawMessage(`{"questions":[{"question":"Which lib?","header":"Lib","options":[{"label":"A","description":"a"},{"label":"B","description":"b"}]}]}`)
+	fs.emit(claude.Event{Kind: claude.KindPermission, RequestID: "req_q", ToolName: "AskUserQuestion", ToolInput: orig})
+	waitForStatus(t, st, sess.ID, models.StatusAwaitingApproval)
+
+	answers := map[string]string{"Which lib?": "A"}
+	if err := mgr.RespondPermission(sess.ID, "req_q", true, false, "", answers); err != nil {
+		t.Fatalf("respond: %v", err)
+	}
+	fs.done()
+	mgr.Wait()
+
+	resp := fs.responses()
+	if len(resp) != 1 || !resp[0].allow {
+		t.Fatalf("expected single allow, got %+v", resp)
+	}
+	var got map[string]any
+	if err := json.Unmarshal([]byte(resp[0].input), &got); err != nil {
+		t.Fatalf("unmarshal forwarded input: %v (raw=%s)", err, resp[0].input)
+	}
+	gotAnswers, ok := got["answers"].(map[string]any)
+	if !ok {
+		t.Fatalf("forwarded input missing answers map: %+v", got)
+	}
+	if gotAnswers["Which lib?"] != "A" {
+		t.Fatalf("forwarded answers wrong: %+v", gotAnswers)
+	}
+	if _, hasQuestions := got["questions"]; !hasQuestions {
+		t.Fatalf("forwarded input dropped original questions: %+v", got)
+	}
+}
+
 func TestRespondUnknownRequest(t *testing.T) {
 	fs := newFakeSession()
 	mgr, _, sess := setup(t, &fakeRunner{sess: fs})
 	_, _ = mgr.SendMessage(sess.ID, "x", nil)
-	if err := mgr.RespondPermission(sess.ID, "ghost", true, false, ""); !errors.Is(err, store.ErrNotFound) {
+	if err := mgr.RespondPermission(sess.ID, "ghost", true, false, "", nil); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
 	fs.done()
@@ -365,7 +404,7 @@ func TestSetModeAcceptEditsOnlyAllowsEditTools(t *testing.T) {
 		t.Fatalf("expected only Bash pending, got %+v", pending)
 	}
 
-	if err := mgr.RespondPermission(sess.ID, "req_bash", false, false, "no"); err != nil {
+	if err := mgr.RespondPermission(sess.ID, "req_bash", false, false, "no", nil); err != nil {
 		t.Fatalf("respond: %v", err)
 	}
 	fs.done()

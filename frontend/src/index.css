@@ -763,6 +763,68 @@ a {
   color: #fff;
 }
 
+/* AskUserQuestion picker: stacks question fieldsets above the action row. */
+.approval-ask {
+  flex-direction: column;
+  align-items: stretch;
+}
+.approval-ask .approval-actions {
+  align-self: flex-end;
+}
+.ask-question {
+  border: none;
+  padding: 0;
+  margin: 0.5rem 0 0;
+}
+.ask-question-legend {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  padding: 0;
+  margin-bottom: 0.35rem;
+}
+.ask-question-header {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.1rem 0.35rem;
+}
+.ask-question-text {
+  font-weight: 600;
+}
+.ask-options {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.ask-option label {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  column-gap: 0.5rem;
+  align-items: baseline;
+  cursor: pointer;
+  padding: 0.25rem 0.35rem;
+  border-radius: 4px;
+}
+.ask-option label:hover {
+  background: var(--bg);
+}
+.ask-option-label {
+  font-weight: 500;
+}
+.ask-option-description {
+  grid-column: 2;
+  color: var(--text-muted);
+  font-size: 0.78rem;
+}
+
 /* Mode selector (segmented control) */
 .mode-selector {
   display: inline-flex;

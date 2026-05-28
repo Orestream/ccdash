@@ -392,11 +392,15 @@ export function SessionView({ sessionId }: SessionViewProps) {
   );
 
   const handleDecide = useCallback(
-    async (requestId: string, decision: PermissionDecision) => {
+    async (
+      requestId: string,
+      decision: PermissionDecision,
+      answers?: Record<string, string>,
+    ) => {
       setActionError(null);
       setDecidingId(requestId);
       try {
-        await respondPermission(sessionId, requestId, { decision });
+        await respondPermission(sessionId, requestId, { decision, answers });
         // Optimistically remove on success; the resolved event will also drop it.
         setPermissions((prev) => prev.filter((p) => p.id !== requestId));
       } catch (err) {
@@ -553,7 +557,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 
       <ApprovalMenu
         requests={permissions}
-        onDecide={(id, decision) => void handleDecide(id, decision)}
+        onDecide={(id, decision, answers) => void handleDecide(id, decision, answers)}
         pendingId={decidingId}
       />
 

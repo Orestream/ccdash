@@ -173,7 +173,7 @@ omitted; `resetsAt` may be absent.
 | PATCH  | `/api/sessions/{id}/mode` | `{ "permissionMode" }` | `Session` (changes answering mode) |
 | PATCH  | `/api/sessions/{id}/title` | `{ "title" }` | `Session` (renames; non-empty title required) |
 | GET    | `/api/sessions/{id}/permissions` | — | `PermissionRequest[]` (currently pending) |
-| POST   | `/api/sessions/{id}/permissions/{requestId}` | `{ "decision": "allow"｜"allow_always"｜"deny", "message?" }` | `{ "ok": true }` |
+| POST   | `/api/sessions/{id}/permissions/{requestId}` | `{ "decision": "allow"｜"allow_always"｜"deny", "message?", "answers?" }` | `{ "ok": true }` |
 | GET    | `/api/sessions/{id}/usage` | — | `UsageRecord[]` |
 | GET    | `/api/attachments/{id}` | — | raw image bytes (`Content-Type` is the stored media type) |
 | GET    | `/api/usage` | — | `UsageSummary` |
@@ -182,6 +182,13 @@ omitted; `resetsAt` may be absent.
 `decision` semantics: `allow` approves this one request; `allow_always` approves
 it and auto-approves further requests for the same tool in this session;
 `deny` rejects it (optional `message` is shown to claude).
+
+`answers` is used to ship back results from tools that gather user input through
+the permission dialog (notably `AskUserQuestion`): a map of question text →
+selected option label, merged into the tool's `updatedInput` on `allow`. For
+multi-select questions the client joins selected labels with `", "` (the
+matching format the claude SDK accepts). The field is ignored unless `decision`
+is `allow`.
 
 Title auto-naming: a session created with a blank `title` is named from the
 first user message (its first non-empty line, truncated) when that message is

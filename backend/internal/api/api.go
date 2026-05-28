@@ -447,6 +447,11 @@ func (s *Server) handleRespondPermission(w http.ResponseWriter, r *http.Request)
 	var body struct {
 		Decision string `json:"decision"`
 		Message  string `json:"message"`
+		// answers ships user selections for tools whose result is gathered
+		// through the permission dialog (AskUserQuestion). Keys are question
+		// text; values are the selected option label (multi-select: ", "-joined
+		// by the client). Ignored unless decision is "allow".
+		Answers map[string]string `json:"answers"`
 	}
 	if !decode(w, r, &body) {
 		return
@@ -463,7 +468,7 @@ func (s *Server) handleRespondPermission(w http.ResponseWriter, r *http.Request)
 		writeErr(w, http.StatusBadRequest, "decision must be allow, allow_always, or deny")
 		return
 	}
-	if err := s.mgr.RespondPermission(id, requestID, allow, always, body.Message); err != nil {
+	if err := s.mgr.RespondPermission(id, requestID, allow, always, body.Message, body.Answers); err != nil {
 		writeErr(w, statusForErr(err), err.Error())
 		return
 	}
