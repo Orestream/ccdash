@@ -48,12 +48,19 @@ const DELTA_KIND_LABEL: Record<string, string> = {
 // How close to the bottom (px) still counts as "stuck to the bottom".
 const SCROLL_SNAP_THRESHOLD = 48;
 
+// Per-session composer drafts. Module-level so switching chats — or navigating
+// away and back to a chat — restores its in-flight text. Lives only for the
+// page's lifetime; reloads start fresh.
+const draftCache = new Map<string, string>();
+
 export function SessionView({ sessionId }: SessionViewProps) {
   const [session, setSession] = useState<Session | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [draft, setDraft] = useState('');
+  const [draft, setDraft] = useState<string>(() => draftCache.get(sessionId) ?? '');
+  const draftRef = useRef(draft);
+  const prevSessionIdRef = useRef(sessionId);
   const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
   const [sending, setSending] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -75,6 +82,35 @@ export function SessionView({ sessionId }: SessionViewProps) {
   // Guards the title editor's exit so Enter/Escape and the unmount blur don't
   // double-fire (see finishEditTitle).
   const editingRef = useRef(false);
+
+  // Mirror the live draft into a ref so the session-switch effect can persist
+  // the latest value without re-running on every keystroke.
+  useEffect(() => {
+    draftRef.current = draft;
+  }, [draft]);
+
+  // On sessionId change, stash the outgoing chat's draft and load the incoming
+  // chat's draft. The lazy initializer above handles the first render.
+  useEffect(() => {
+    const prev = prevSessionIdRef.current;
+    if (prev === sessionId) return;
+    if (draftRef.current) draftCache.set(prev, draftRef.current);
+    else draftCache.delete(prev);
+    const next = draftCache.get(sessionId) ?? '';
+    setDraft(next);
+    draftRef.current = next;
+    prevSessionIdRef.current = sessionId;
+  }, [sessionId]);
+
+  // Save the draft when the view unmounts (e.g. navigating to the overview)
+  // so it's still there if the user returns to this chat.
+  useEffect(() => {
+    return () => {
+      const id = prevSessionIdRef.current;
+      if (draftRef.current) draftCache.set(id, draftRef.current);
+      else draftCache.delete(id);
+    };
+  }, []);
 
   // Initial load (session + messages). Permissions are loaded by the recovery
   // effect below (also runs on WS reconnect).

@@ -114,6 +114,30 @@ describe('SessionView composer', () => {
     expect(spy).not.toHaveBeenCalled();
   });
 
+  it('keeps composer drafts per session when switching chats', async () => {
+    const otherSession: Session = { ...session, id: 's2', title: 'Other chat' };
+    vi.spyOn(client, 'getSession').mockImplementation(async (id) =>
+      id === 's2' ? otherSession : session,
+    );
+
+    const { rerender } = render(<SessionView sessionId="s1" />);
+    const ta1 = (await screen.findByLabelText('Prompt')) as HTMLTextAreaElement;
+    fireEvent.change(ta1, { target: { value: 'draft for s1' } });
+
+    rerender(<SessionView sessionId="s2" />);
+    const ta2 = (await screen.findByLabelText('Prompt')) as HTMLTextAreaElement;
+    expect(ta2.value).toBe('');
+    fireEvent.change(ta2, { target: { value: 'draft for s2' } });
+
+    rerender(<SessionView sessionId="s1" />);
+    const ta1Again = (await screen.findByLabelText('Prompt')) as HTMLTextAreaElement;
+    expect(ta1Again.value).toBe('draft for s1');
+
+    rerender(<SessionView sessionId="s2" />);
+    const ta2Again = (await screen.findByLabelText('Prompt')) as HTMLTextAreaElement;
+    expect(ta2Again.value).toBe('draft for s2');
+  });
+
   it('attaches a pasted image as image-1.png and shows a chip', async () => {
     render(<SessionView sessionId="s1" />);
     const textarea = await screen.findByLabelText('Prompt');
