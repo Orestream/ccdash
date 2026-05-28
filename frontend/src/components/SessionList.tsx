@@ -2,7 +2,12 @@
 
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { ApiError, createSession, getProject } from '../api/client';
+import {
+  ApiError,
+  createSession,
+  deleteSession,
+  getProject,
+} from '../api/client';
 import type { Project } from '../types';
 import { useSessions } from '../hooks/useSessions';
 import { StatusBadge } from './StatusBadge';
@@ -16,6 +21,7 @@ export function SessionList({ projectId }: SessionListProps) {
   const [project, setProject] = useState<Project | null>(null);
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -43,6 +49,30 @@ export function SessionList({ projectId }: SessionListProps) {
       setCreateError(msg);
     } finally {
       setCreating(false);
+    }
+  };
+
+  const handleDelete = async (id: string, hasBranch: boolean) => {
+    // Default keeps the branch around so it can still be reviewed/merged. The
+    // confirm offers a one-click "also delete the branch" path for git
+    // projects; non-git sessions skip the branch question entirely.
+    const message = hasBranch
+      ? 'Delete this session and remove its worktree?\n\nClick Cancel to keep it, OK to delete (the branch is kept).'
+      : 'Delete this session?';
+    if (!window.confirm(message)) return;
+    setDeletingId(id);
+    setCreateError(null);
+    try {
+      await deleteSession(id);
+      reload();
+    } catch (err) {
+      const msg =
+        err instanceof ApiError || err instanceof Error
+          ? err.message
+          : 'failed to delete session';
+      setCreateError(msg);
+    } finally {
+      setDeletingId(null);
     }
   };
 
@@ -76,12 +106,23 @@ export function SessionList({ projectId }: SessionListProps) {
 
       <ul className="rows">
         {sessions.map((s) => (
-          <li key={s.id}>
+          <li key={s.id} className="session-row-wrapper">
             <Link to={`/sessions/${s.id}`} className="session-row">
               <span className="session-title">{s.title || 'Untitled session'}</span>
+              {s.branch && <span className="session-branch">{s.branch}</span>}
               <span className="session-model">{s.model}</span>
               <StatusBadge status={s.status} />
             </Link>
+            <button
+              type="button"
+              className="session-delete"
+              aria-label={`Delete session ${s.title || s.id}`}
+              title="Delete session"
+              disabled={deletingId === s.id}
+              onClick={() => void handleDelete(s.id, Boolean(s.branch))}
+            >
+              ✕
+            </button>
           </li>
         ))}
       </ul>

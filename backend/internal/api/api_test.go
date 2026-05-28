@@ -174,6 +174,25 @@ func TestCreateSessionWithMode(t *testing.T) {
 	}
 }
 
+func TestDeleteSession(t *testing.T) {
+	h := newTestServer(t)
+	sess := createSessionForTest(t, h, map[string]string{"title": "t"})
+
+	rec := do(t, h, http.MethodDelete, "/api/sessions/"+sess.ID, nil)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	rec = do(t, h, http.MethodGet, "/api/sessions/"+sess.ID, nil)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 after delete, got %d", rec.Code)
+	}
+	// Deleting twice returns 404, not 5xx.
+	rec = do(t, h, http.MethodDelete, "/api/sessions/"+sess.ID, nil)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 on second delete, got %d", rec.Code)
+	}
+}
+
 func TestCreateSessionInvalidMode(t *testing.T) {
 	h := newTestServer(t)
 	rec := do(t, h, http.MethodPost, "/api/projects", map[string]string{"name": "demo", "path": "/tmp/demo"})

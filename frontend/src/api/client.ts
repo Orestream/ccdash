@@ -149,6 +149,19 @@ export function stopSession(sessionId: string): Promise<Session> {
   });
 }
 
+// deleteSession removes a session (and its worktree if any). By default the
+// worktree's branch is preserved so the user can still merge/inspect it; pass
+// deleteBranch=true to drop the branch too.
+export function deleteSession(
+  sessionId: string,
+  deleteBranch = false,
+): Promise<void> {
+  const qs = deleteBranch ? '?deleteBranch=true' : '';
+  return request<void>(`/sessions/${encodeURIComponent(sessionId)}${qs}`, {
+    method: 'DELETE',
+  });
+}
+
 export function setSessionMode(
   sessionId: string,
   permissionMode: PermissionMode,

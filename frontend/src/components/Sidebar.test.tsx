@@ -19,6 +19,9 @@ function makeSession(id: string, title: string, updatedAt: string): Session {
     status: 'idle',
     model: 'claude-opus-4-7',
     permissionMode: 'default',
+    worktreePath: '',
+    branch: '',
+    baseCommit: '',
     createdAt: '2026-05-25T12:00:00Z',
     updatedAt,
   };

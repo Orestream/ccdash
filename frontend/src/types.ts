@@ -26,6 +26,13 @@ export interface Session {
   status: SessionStatus;
   model: string;
   permissionMode: PermissionMode;
+  // Populated when the project is inside a git repo: the backend provisions
+  // a `git worktree add -b ccdash/<short-id>` against the project's repo root
+  // and the claude CLI runs in worktreePath instead of the project path. All
+  // three are empty strings for non-git projects.
+  worktreePath: string;
+  branch: string;
+  baseCommit: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -132,6 +139,7 @@ export type WsEventType =
   | 'session.permission'
   | 'session.permission_resolved'
   | 'session.usage'
+  | 'session.deleted'
   | 'project.created'
   | 'project.deleted';
 
@@ -148,6 +156,7 @@ export type WsEvent =
   | WsEventBase<'session.permission', PermissionRequest>
   | WsEventBase<'session.permission_resolved', PermissionResolved>
   | WsEventBase<'session.usage', UsageRecord>
+  | WsEventBase<'session.deleted', Session>
   | WsEventBase<'project.created', Project>
   | WsEventBase<'project.deleted', Project>;
 

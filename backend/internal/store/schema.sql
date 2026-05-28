@@ -13,6 +13,9 @@ CREATE TABLE IF NOT EXISTS sessions (
     status            TEXT NOT NULL DEFAULT 'idle',
     model             TEXT NOT NULL DEFAULT '',
     permission_mode   TEXT NOT NULL DEFAULT 'default',
+    worktree_path     TEXT NOT NULL DEFAULT '',
+    branch            TEXT NOT NULL DEFAULT '',
+    base_commit       TEXT NOT NULL DEFAULT '',
     created_at        TEXT NOT NULL,
     updated_at        TEXT NOT NULL
 );

@@ -57,6 +57,9 @@ func Open(dsn string) (*Store, error) {
 func migrate(db *sql.DB) error {
 	alters := []string{
 		`ALTER TABLE sessions ADD COLUMN permission_mode TEXT NOT NULL DEFAULT 'default'`,
+		`ALTER TABLE sessions ADD COLUMN worktree_path TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE sessions ADD COLUMN branch TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE sessions ADD COLUMN base_commit TEXT NOT NULL DEFAULT ''`,
 	}
 	for _, stmt := range alters {
 		if _, err := db.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
@@ -151,30 +154,50 @@ func (s *Store) DeleteProject(id string) error {
 
 // --- Sessions ---
 
+// SessionInit groups optional fields for CreateSession beyond the required
+// project/title/model/mode. Empty values are persisted as empty strings.
+type SessionInit struct {
+	// ID lets the caller pre-allocate the session id (so it can derive a worktree
+	// path that includes it). An empty value means "generate one."
+	ID           string
+	WorktreePath string
+	Branch       string
+	BaseCommit   string
+}
+
 // CreateSession inserts a new idle session for a project. An empty mode defaults
-// to ModeDefault.
-func (s *Store) CreateSession(projectID, title, model string, mode models.PermissionMode) (models.Session, error) {
+// to ModeDefault. init carries optional worktree metadata (empty when the
+// project is not in a git repo).
+func (s *Store) CreateSession(projectID, title, model string, mode models.PermissionMode, init SessionInit) (models.Session, error) {
 	if _, err := s.GetProject(projectID); err != nil {
 		return models.Session{}, err
 	}
 	if mode == "" {
 		mode = models.ModeDefault
 	}
+	id := init.ID
+	if id == "" {
+		id = uuid.NewString()
+	}
 	now := time.Now().UTC()
 	sess := models.Session{
-		ID:             uuid.NewString(),
+		ID:             id,
 		ProjectID:      projectID,
 		Title:          title,
 		Status:         models.StatusIdle,
 		Model:          model,
 		PermissionMode: mode,
+		WorktreePath:   init.WorktreePath,
+		Branch:         init.Branch,
+		BaseCommit:     init.BaseCommit,
 		CreatedAt:      now,
 		UpdatedAt:      now,
 	}
 	_, err := s.db.Exec(
-		`INSERT INTO sessions (id, project_id, claude_session_id, title, status, model, permission_mode, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO sessions (id, project_id, claude_session_id, title, status, model, permission_mode, worktree_path, branch, base_commit, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		sess.ID, sess.ProjectID, sess.ClaudeSessionID, sess.Title, sess.Status, sess.Model, sess.PermissionMode,
+		sess.WorktreePath, sess.Branch, sess.BaseCommit,
 		now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano),
 	)
 	if err != nil {
@@ -188,7 +211,9 @@ func scanSession(scanner interface{ Scan(...any) error }) (models.Session, error
 	var status, mode, created, updated string
 	if err := scanner.Scan(
 		&sess.ID, &sess.ProjectID, &sess.ClaudeSessionID, &sess.Title,
-		&status, &sess.Model, &mode, &created, &updated,
+		&status, &sess.Model, &mode,
+		&sess.WorktreePath, &sess.Branch, &sess.BaseCommit,
+		&created, &updated,
 	); err != nil {
 		return models.Session{}, err
 	}
@@ -199,7 +224,7 @@ func scanSession(scanner interface{ Scan(...any) error }) (models.Session, error
 	return sess, nil
 }
 
-const sessionCols = `id, project_id, claude_session_id, title, status, model, permission_mode, created_at, updated_at`
+const sessionCols = `id, project_id, claude_session_id, title, status, model, permission_mode, worktree_path, branch, base_commit, created_at, updated_at`
 
 // ListSessions returns all sessions, newest first.
 func (s *Store) ListSessions() ([]models.Session, error) {
@@ -288,6 +313,20 @@ func (s *Store) UpdateSessionTitle(id, title string) error {
 	)
 	if err != nil {
 		return fmt.Errorf("update session title: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// DeleteSession removes a session row; FK cascades remove its messages,
+// attachments, and usage records.
+func (s *Store) DeleteSession(id string) error {
+	res, err := s.db.Exec(`DELETE FROM sessions WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("delete session: %w", err)
 	}
 	n, _ := res.RowsAffected()
 	if n == 0 {

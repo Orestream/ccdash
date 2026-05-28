@@ -37,10 +37,23 @@ are `camelCase`.
   "status": "idle | processing | awaiting_input | awaiting_approval | done | error",
   "model": "claude-opus-4-7",
   "permissionMode": "default | acceptEdits | plan | auto",
+  "worktreePath": "/home/robin/.local/state/ccdash/worktrees/<session-id>",
+  "branch": "ccdash/abcd1234",
+  "baseCommit": "0123456789abcdef…",
   "createdAt": "2026-05-25T12:00:00Z",
   "updatedAt": "2026-05-25T12:01:00Z"
 }
 ```
+
+`worktreePath`, `branch`, and `baseCommit` are populated when the session's
+project is inside a git repo: on session creation the backend runs
+`git worktree add -b ccdash/<short-id> <worktreePath> <baseCommit>` against
+the project's repo root and the claude CLI is launched with that path as
+its working directory, so parallel sessions on one repo can't clobber each
+other. `baseCommit` is the project's HEAD at the moment of session creation
+— uncommitted changes in the project's main checkout are **not** propagated
+into the worktree. For non-git projects all three fields are empty strings
+and the session runs in the project path directly (legacy behavior).
 
 `status` semantics:
 - `idle` — created, no prompt running.
@@ -153,6 +166,7 @@ omitted; `resetsAt` may be absent.
 | POST   | `/api/projects/{id}/sessions` | `{ "title?", "model?", "permissionMode?" }` | `Session` (201) |
 | GET    | `/api/sessions` | — | `Session[]` (all sessions, newest first) |
 | GET    | `/api/sessions/{id}` | — | `Session` |
+| DELETE | `/api/sessions/{id}?deleteBranch=true｜false` | — | 204 (removes the worktree if any; deletes the branch only when `deleteBranch=true`, default `false`) |
 | GET    | `/api/sessions/{id}/messages` | — | `Message[]` |
 | POST   | `/api/sessions/{id}/messages` | `{ "content", "images?" }` | `Message` (202; runs async, status flips to `processing`) |
 | POST   | `/api/sessions/{id}/stop` | — | `Session` (cancels a running prompt) |
@@ -192,7 +206,7 @@ need to send anything (server → client only for now). Each event:
 
 ```json
 {
-  "type": "session.status | session.message | session.delta | session.permission | session.permission_resolved | session.usage | project.created | project.deleted",
+  "type": "session.status | session.message | session.delta | session.permission | session.permission_resolved | session.usage | session.deleted | project.created | project.deleted",
   "ts": "2026-05-25T12:00:00Z",
   "payload": { }
 }
@@ -214,6 +228,8 @@ Event payloads:
 - `session.permission_resolved` → `{ "sessionId": "uuid", "requestId": "...", "decision": "allow｜allow_always｜deny" }`
   (a pending request was answered; remove it from the UI).
 - `session.usage` → a full `UsageRecord`.
+- `session.deleted` → a full `Session` object (the row was removed; its
+  worktree, if any, has been cleaned up).
 - `project.created` / `project.deleted` → a full `Project` object.
 
 The frontend should treat the WebSocket as the live source of truth and fall back to

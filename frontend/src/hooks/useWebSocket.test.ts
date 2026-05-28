@@ -11,6 +11,9 @@ const sessionPayload: Session = {
   status: 'processing',
   model: 'claude-opus-4-7',
   permissionMode: 'default',
+  worktreePath: '',
+  branch: '',
+  baseCommit: '',
   createdAt: '2026-05-25T12:00:00Z',
   updatedAt: '2026-05-25T12:01:00Z',
 };

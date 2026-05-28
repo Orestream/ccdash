@@ -15,6 +15,7 @@ import (
 
 	"github.com/robinmalmstrom/ccdash/backend/internal/api"
 	"github.com/robinmalmstrom/ccdash/backend/internal/claude"
+	gitwt "github.com/robinmalmstrom/ccdash/backend/internal/git"
 	"github.com/robinmalmstrom/ccdash/backend/internal/session"
 	"github.com/robinmalmstrom/ccdash/backend/internal/store"
 	"github.com/robinmalmstrom/ccdash/backend/internal/utilization"
@@ -29,6 +30,7 @@ func main() {
 	dbPath := envOr("CCDASH_DB", "ccdash.db")
 	claudeBin := envOr("CCDASH_CLAUDE_BIN", "claude")
 	credPath := envOr("CCDASH_CRED_PATH", defaultCredPath())
+	worktreeRoot := envOr("CCDASH_WORKTREE_ROOT", defaultWorktreeRoot())
 
 	st, err := store.Open(dbPath)
 	if err != nil {
@@ -37,7 +39,7 @@ func main() {
 	defer func() { _ = st.Close() }()
 
 	hub := ws.NewHub()
-	mgr := session.New(st, hub, claude.NewCLIRunner(claudeBin))
+	mgr := session.NewWithGit(st, hub, claude.NewCLIRunner(claudeBin), gitwt.NewExecRunner(), worktreeRoot)
 	srv := api.NewServer(st, mgr, hub, utilization.NewFetcher(credPath), version)
 
 	httpServer := &http.Server{
@@ -88,6 +90,20 @@ func envOr(key, fallback string) string {
 func defaultCredPath() string {
 	if home, err := os.UserHomeDir(); err == nil {
 		return filepath.Join(home, ".claude", ".credentials.json")
+	}
+	return ""
+}
+
+// defaultWorktreeRoot returns where per-session git worktrees should live.
+// Follows XDG: $XDG_STATE_HOME/ccdash/worktrees, falling back to
+// $HOME/.local/state/ccdash/worktrees. Returns "" if no home is resolvable,
+// in which case the manager skips worktree isolation entirely.
+func defaultWorktreeRoot() string {
+	if xdg := os.Getenv("XDG_STATE_HOME"); xdg != "" {
+		return filepath.Join(xdg, "ccdash", "worktrees")
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		return filepath.Join(home, ".local", "state", "ccdash", "worktrees")
 	}
 	return ""
 }

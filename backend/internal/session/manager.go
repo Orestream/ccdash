@@ -9,6 +9,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -16,6 +18,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/robinmalmstrom/ccdash/backend/internal/claude"
+	gitwt "github.com/robinmalmstrom/ccdash/backend/internal/git"
 	"github.com/robinmalmstrom/ccdash/backend/internal/models"
 	"github.com/robinmalmstrom/ccdash/backend/internal/store"
 	"github.com/robinmalmstrom/ccdash/backend/internal/ws"
@@ -26,6 +29,9 @@ type Manager struct {
 	store  *store.Store
 	hub    *ws.Hub
 	runner claude.Runner
+
+	git          gitwt.Runner // wrapper around the git CLI; nil disables worktree isolation
+	worktreeRoot string       // base dir for per-session worktrees (e.g. $XDG_STATE_HOME/ccdash/worktrees)
 
 	mu   sync.Mutex
 	live map[string]*liveSession // sessionID -> live process
@@ -48,9 +54,25 @@ type pendingPerm struct {
 	input json.RawMessage
 }
 
-// New constructs a Manager.
+// New constructs a Manager without worktree isolation: sessions run in their
+// project's path, mirroring legacy behavior.
 func New(s *store.Store, h *ws.Hub, r claude.Runner) *Manager {
 	return &Manager{store: s, hub: h, runner: r, live: make(map[string]*liveSession)}
+}
+
+// NewWithGit constructs a Manager that creates a per-session git worktree for
+// any project whose path is inside a git repo. Worktrees are placed under
+// worktreeRoot/<session-id>. Pass git=nil or worktreeRoot="" to disable
+// isolation (equivalent to New).
+func NewWithGit(s *store.Store, h *ws.Hub, r claude.Runner, git gitwt.Runner, worktreeRoot string) *Manager {
+	return &Manager{
+		store:        s,
+		hub:          h,
+		runner:       r,
+		git:          git,
+		worktreeRoot: worktreeRoot,
+		live:         make(map[string]*liveSession),
+	}
 }
 
 // InboundImage is a decoded image pasted onto a user turn.
@@ -221,6 +243,134 @@ func (m *Manager) Rename(sessionID, title string) (models.Session, error) {
 	return sess, nil
 }
 
+// CreateSession provisions a new session row, allocating a git worktree first
+// when the project is in a git repo (and the manager was built with git
+// support). For non-git projects (or when git support is disabled) the session
+// runs in the project path directly and the worktree fields stay empty.
+//
+// Failure ordering matters: the worktree is created before the row is inserted
+// so a half-provisioned session row can never point at a missing worktree.
+func (m *Manager) CreateSession(projectID, title, model string, mode models.PermissionMode) (models.Session, error) {
+	project, err := m.store.GetProject(projectID)
+	if err != nil {
+		return models.Session{}, err
+	}
+
+	init := store.SessionInit{ID: uuid.NewString()}
+	cleanup := func() {} // run on later failure to roll back worktree creation
+
+	if m.git != nil && m.worktreeRoot != "" {
+		ctx := context.Background()
+		repoRoot, ok, repoErr := gitwt.IsRepo(ctx, m.git, project.Path)
+		if repoErr != nil {
+			return models.Session{}, fmt.Errorf("check git repo: %w", repoErr)
+		}
+		if ok {
+			base, headErr := gitwt.HeadCommit(ctx, m.git, repoRoot)
+			if headErr != nil {
+				return models.Session{}, fmt.Errorf("read HEAD: %w", headErr)
+			}
+			branch := "ccdash/" + init.ID[:8]
+			dest := filepath.Join(m.worktreeRoot, init.ID)
+			if mkErr := os.MkdirAll(m.worktreeRoot, 0o755); mkErr != nil {
+				return models.Session{}, fmt.Errorf("ensure worktree root: %w", mkErr)
+			}
+			if addErr := gitwt.AddWorktree(ctx, m.git, repoRoot, dest, branch, base); addErr != nil {
+				return models.Session{}, fmt.Errorf("create worktree: %w", addErr)
+			}
+			init.WorktreePath = dest
+			init.Branch = branch
+			init.BaseCommit = base
+			cleanup = func() {
+				_ = gitwt.RemoveWorktree(context.Background(), m.git, repoRoot, dest, true)
+				_ = gitwt.DeleteBranch(context.Background(), m.git, repoRoot, branch, true)
+			}
+		}
+	}
+
+	sess, err := m.store.CreateSession(projectID, title, model, mode, init)
+	if err != nil {
+		cleanup()
+		return models.Session{}, err
+	}
+	return sess, nil
+}
+
+// DeleteSession terminates any live process, removes the session's worktree if
+// one was provisioned, optionally deletes the branch, then removes the row.
+// Missing worktrees / branches are tolerated so manual cleanup outside ccdash
+// doesn't wedge the API.
+func (m *Manager) DeleteSession(sessionID string, deleteBranch bool) error {
+	sess, err := m.store.GetSession(sessionID)
+	if err != nil {
+		return err
+	}
+	_ = m.Stop(sessionID) // also returns to idle if not running; safe to ignore err
+
+	if sess.WorktreePath != "" && m.git != nil {
+		project, perr := m.store.GetProject(sess.ProjectID)
+		if perr == nil {
+			ctx := context.Background()
+			if repoRoot, ok, _ := gitwt.IsRepo(ctx, m.git, project.Path); ok {
+				if rmErr := gitwt.RemoveWorktree(ctx, m.git, repoRoot, sess.WorktreePath, true); rmErr != nil {
+					// Best-effort: log via hub? Silent for now — DeleteSession should
+					// still proceed so the row doesn't outlive the worktree.
+					_ = rmErr
+				}
+				if deleteBranch && sess.Branch != "" {
+					_ = gitwt.DeleteBranch(ctx, m.git, repoRoot, sess.Branch, true)
+				}
+			}
+		}
+	}
+
+	if err := m.store.DeleteSession(sessionID); err != nil {
+		return err
+	}
+	m.hub.Broadcast("session.deleted", sess)
+	return nil
+}
+
+// DeleteProject cleans up worktrees for every session under the project, then
+// deletes the project row (FK cascades remove the session rows).
+func (m *Manager) DeleteProject(projectID string) error {
+	project, err := m.store.GetProject(projectID)
+	if err != nil {
+		return err
+	}
+
+	sessions, err := m.store.ListProjectSessions(projectID)
+	if err != nil {
+		return err
+	}
+
+	var repoRoot string
+	var haveRoot bool
+	if m.git != nil {
+		ctx := context.Background()
+		root, ok, _ := gitwt.IsRepo(ctx, m.git, project.Path)
+		repoRoot = root
+		haveRoot = ok
+	}
+
+	for _, sess := range sessions {
+		_ = m.Stop(sess.ID)
+		if sess.WorktreePath != "" && haveRoot {
+			ctx := context.Background()
+			_ = gitwt.RemoveWorktree(ctx, m.git, repoRoot, sess.WorktreePath, true)
+			// Leave the branch by default; project-level cleanup deleting all
+			// branches risks losing user work that may already be merged or
+			// pushed elsewhere.
+		}
+	}
+
+	if err := m.store.DeleteProject(projectID); err != nil {
+		return err
+	}
+	m.hub.Broadcast("project.deleted", project)
+	return nil
+}
+
 // Stop terminates a session's live process and returns it to idle, ready for the
 // next prompt (a fresh process is started on the next Send).
 func (m *Manager) Stop(sessionID string) error {
@@ -261,8 +411,12 @@ func (m *Manager) ensureLive(sess models.Session) (*liveSession, error) {
 	if err != nil {
 		return nil, err
 	}
+	cwd := project.Path
+	if sess.WorktreePath != "" {
+		cwd = sess.WorktreePath
+	}
 	cs, err := m.runner.Start(context.Background(), claude.StartRequest{
-		Cwd:             project.Path,
+		Cwd:             cwd,
 		Model:           sess.Model,
 		ResumeSessionID: sess.ClaudeSessionID,
 		PermissionMode:  sess.PermissionMode.CLIPermissionMode(),

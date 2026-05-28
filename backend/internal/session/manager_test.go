@@ -4,11 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/robinmalmstrom/ccdash/backend/internal/claude"
+	gitwt "github.com/robinmalmstrom/ccdash/backend/internal/git"
 	"github.com/robinmalmstrom/ccdash/backend/internal/models"
 	"github.com/robinmalmstrom/ccdash/backend/internal/store"
 	"github.com/robinmalmstrom/ccdash/backend/internal/ws"
@@ -93,7 +98,7 @@ func setup(t *testing.T, runner claude.Runner) (*Manager, *store.Store, models.S
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	p, _ := st.CreateProject("demo", "/tmp/demo")
-	sess, _ := st.CreateSession(p.ID, "task", "claude-opus-4-7", models.ModeDefault)
+	sess, _ := st.CreateSession(p.ID, "task", "claude-opus-4-7", models.ModeDefault, store.SessionInit{})
 	return New(st, ws.NewHub(), runner), st, sess
 }
 
@@ -341,7 +346,7 @@ func TestSendMessageWithImages(t *testing.T) {
 func TestSendMessageAutoNamesBlankSession(t *testing.T) {
 	fs := newFakeSession()
 	mgr, st, sess := setup(t, &fakeRunner{sess: fs})
-	blank, _ := st.CreateSession(sess.ProjectID, "", "claude-opus-4-7", models.ModeDefault)
+	blank, _ := st.CreateSession(sess.ProjectID, "", "claude-opus-4-7", models.ModeDefault, store.SessionInit{})
 
 	if _, err := mgr.SendMessage(blank.ID, "Fix the login bug\nand other stuff", nil); err != nil {
 		t.Fatalf("send: %v", err)
@@ -400,5 +405,186 @@ func TestTitleFromMessage(t *testing.T) {
 		if got := titleFromMessage(in); got != want {
 			t.Fatalf("titleFromMessage(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// --- worktree-isolation integration tests ---
+
+// gitInitRepo creates a fresh local git repo with one commit and returns its
+// path. The test is skipped if no git binary is on PATH.
+func gitInitRepo(t *testing.T) string {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH; skipping")
+	}
+	dir := t.TempDir()
+	r := gitwt.NewExecRunner()
+	ctx := context.Background()
+	if _, err := r.Run(ctx, dir, "init", "-b", "main"); err != nil {
+		t.Fatalf("git init: %v", err)
+	}
+	mustRunGit(t, r, dir, "config", "user.email", "test@example.com")
+	mustRunGit(t, r, dir, "config", "user.name", "ccdash test")
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("write README: %v", err)
+	}
+	mustRunGit(t, r, dir, "add", "README.md")
+	mustRunGit(t, r, dir, "commit", "-m", "init")
+	return dir
+}
+
+func mustRunGit(t *testing.T, r gitwt.Runner, dir string, args ...string) {
+	t.Helper()
+	if _, err := r.Run(context.Background(), dir, args...); err != nil {
+		t.Fatalf("git %v: %v", args, err)
+	}
+}
+
+func setupWithGit(t *testing.T) (*Manager, *store.Store, models.Project, string) {
+	t.Helper()
+	repo := gitInitRepo(t)
+	st, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	worktreeRoot := t.TempDir()
+	mgr := NewWithGit(st, ws.NewHub(), &fakeRunner{sess: newFakeSession()}, gitwt.NewExecRunner(), worktreeRoot)
+	p, _ := st.CreateProject("demo", repo)
+	return mgr, st, p, worktreeRoot
+}
+
+func TestCreateSessionProvisionsWorktreeForGitProject(t *testing.T) {
+	mgr, st, p, worktreeRoot := setupWithGit(t)
+
+	sess, err := mgr.CreateSession(p.ID, "task", "m", models.ModeDefault)
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if sess.WorktreePath == "" || sess.Branch == "" || sess.BaseCommit == "" {
+		t.Fatalf("expected worktree fields populated: %+v", sess)
+	}
+	if filepath.Dir(sess.WorktreePath) != worktreeRoot {
+		t.Fatalf("worktree not under root: %s", sess.WorktreePath)
+	}
+	if !strings.HasPrefix(sess.Branch, "ccdash/") {
+		t.Fatalf("unexpected branch name: %s", sess.Branch)
+	}
+	if st, statErr := os.Stat(sess.WorktreePath); statErr != nil || !st.IsDir() {
+		t.Fatalf("worktree dir missing: err=%v", statErr)
+	}
+	// Persisted on the row.
+	got, _ := st.GetSession(sess.ID)
+	if got.WorktreePath != sess.WorktreePath || got.Branch != sess.Branch {
+		t.Fatalf("worktree fields not persisted: %+v", got)
+	}
+}
+
+func TestCreateSessionNonGitProjectKeepsLegacyBehavior(t *testing.T) {
+	st, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	plainDir := t.TempDir() // not a git repo
+	mgr := NewWithGit(st, ws.NewHub(), &fakeRunner{sess: newFakeSession()}, gitwt.NewExecRunner(), t.TempDir())
+	p, _ := st.CreateProject("plain", plainDir)
+
+	sess, err := mgr.CreateSession(p.ID, "task", "m", models.ModeDefault)
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if sess.WorktreePath != "" || sess.Branch != "" || sess.BaseCommit != "" {
+		t.Fatalf("expected empty worktree fields for non-git project, got %+v", sess)
+	}
+}
+
+func TestEnsureLiveUsesWorktreePath(t *testing.T) {
+	mgr, _, p, _ := setupWithGit(t)
+	// Swap in a fresh fake runner so we can inspect the cwd it received.
+	fs := newFakeSession()
+	runner := &fakeRunner{sess: fs}
+	mgr.runner = runner
+
+	sess, err := mgr.CreateSession(p.ID, "task", "m", models.ModeDefault)
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := mgr.SendMessage(sess.ID, "hi", nil); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	fs.done()
+	mgr.Wait()
+
+	if runner.lastReq.Cwd != sess.WorktreePath {
+		t.Fatalf("expected cwd=%q (worktree), got %q", sess.WorktreePath, runner.lastReq.Cwd)
+	}
+}
+
+func TestDeleteSessionRemovesWorktreeKeepsBranchByDefault(t *testing.T) {
+	mgr, _, p, _ := setupWithGit(t)
+	sess, err := mgr.CreateSession(p.ID, "task", "m", models.ModeDefault)
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	wt := sess.WorktreePath
+	branch := sess.Branch
+
+	if err := mgr.DeleteSession(sess.ID, false); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if _, err := os.Stat(wt); !os.IsNotExist(err) {
+		t.Fatalf("expected worktree dir gone, got err=%v", err)
+	}
+	// Branch should still exist (default deleteBranch=false).
+	repoRoot, _, _ := gitwt.IsRepo(context.Background(), gitwt.NewExecRunner(), p.Path)
+	out, _ := gitwt.NewExecRunner().Run(context.Background(), repoRoot, "branch", "--list", branch)
+	if !strings.Contains(string(out), branch) {
+		t.Fatalf("expected branch %s preserved, got %q", branch, out)
+	}
+}
+
+func TestDeleteSessionWithDeleteBranchTrueRemovesBoth(t *testing.T) {
+	mgr, _, p, _ := setupWithGit(t)
+	sess, err := mgr.CreateSession(p.ID, "task", "m", models.ModeDefault)
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	branch := sess.Branch
+
+	if err := mgr.DeleteSession(sess.ID, true); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	repoRoot, _, _ := gitwt.IsRepo(context.Background(), gitwt.NewExecRunner(), p.Path)
+	out, _ := gitwt.NewExecRunner().Run(context.Background(), repoRoot, "branch", "--list", branch)
+	if strings.TrimSpace(string(out)) != "" {
+		t.Fatalf("expected branch removed, still got %q", out)
+	}
+}
+
+func TestDeleteProjectCleansUpWorktrees(t *testing.T) {
+	mgr, st, p, _ := setupWithGit(t)
+	s1, err := mgr.CreateSession(p.ID, "a", "m", models.ModeDefault)
+	if err != nil {
+		t.Fatalf("create s1: %v", err)
+	}
+	s2, err := mgr.CreateSession(p.ID, "b", "m", models.ModeDefault)
+	if err != nil {
+		t.Fatalf("create s2: %v", err)
+	}
+
+	if err := mgr.DeleteProject(p.ID); err != nil {
+		t.Fatalf("delete project: %v", err)
+	}
+	if _, err := os.Stat(s1.WorktreePath); !os.IsNotExist(err) {
+		t.Fatalf("worktree 1 not cleaned: err=%v", err)
+	}
+	if _, err := os.Stat(s2.WorktreePath); !os.IsNotExist(err) {
+		t.Fatalf("worktree 2 not cleaned: err=%v", err)
+	}
+	if _, err := st.GetProject(p.ID); err != store.ErrNotFound {
+		t.Fatalf("expected project deleted, got %v", err)
 	}
 }

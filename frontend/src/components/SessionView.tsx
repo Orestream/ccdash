@@ -451,6 +451,20 @@ export function SessionView({ sessionId }: SessionViewProps) {
             </h1>
           )}
           {session && <p className="muted">{session.model}</p>}
+          {session?.branch && (
+            <button
+              type="button"
+              className="branch-badge"
+              title={`Worktree: ${session.worktreePath}\nClick to copy path`}
+              onClick={() => {
+                if (session.worktreePath) {
+                  void navigator.clipboard?.writeText(session.worktreePath);
+                }
+              }}
+            >
+              {session.branch}
+            </button>
+          )}
         </div>
         <div className="session-actions">
           {session && (

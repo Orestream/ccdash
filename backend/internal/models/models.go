@@ -71,6 +71,13 @@ type Project struct {
 
 // Session is a single claude conversation tied to a project. Multiple sessions
 // can run concurrently and continue in the background.
+//
+// WorktreePath, Branch, and BaseCommit are populated when the project is in a
+// git repo: on session creation the backend runs `git worktree add` against
+// the project's repo root and the claude CLI is launched with WorktreePath as
+// its working directory so parallel sessions on one repo can't clobber each
+// other. For non-git projects all three fields are empty and claude runs in
+// the project path directly.
 type Session struct {
 	ID              string         `json:"id"`
 	ProjectID       string         `json:"projectId"`
@@ -79,6 +86,9 @@ type Session struct {
 	Status          SessionStatus  `json:"status"`
 	Model           string         `json:"model"`
 	PermissionMode  PermissionMode `json:"permissionMode"`
+	WorktreePath    string         `json:"worktreePath"`
+	Branch          string         `json:"branch"`
+	BaseCommit      string         `json:"baseCommit"`
 	CreatedAt       time.Time      `json:"createdAt"`
 	UpdatedAt       time.Time      `json:"updatedAt"`
 }

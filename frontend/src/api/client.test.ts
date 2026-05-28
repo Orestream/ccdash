@@ -3,6 +3,7 @@ import {
   ApiError,
   createProject,
   deleteProject,
+  deleteSession,
   getHealth,
   getUsageSummary,
   listMessages,
@@ -178,6 +179,21 @@ describe('api client', () => {
     const [url, opts] = fetchMock.mock.calls[0];
     expect(url).toBe('/api/projects/p1');
     expect(opts.method).toBe('DELETE');
+  });
+
+  it('DELETE /api/sessions/{id} omits ?deleteBranch by default', async () => {
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
+    await expect(deleteSession('abc')).resolves.toBeUndefined();
+    const [url, opts] = fetchMock.mock.calls[0];
+    expect(url).toBe('/api/sessions/abc');
+    expect(opts.method).toBe('DELETE');
+  });
+
+  it('DELETE /api/sessions/{id} adds ?deleteBranch=true when requested', async () => {
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
+    await deleteSession('abc', true);
+    const [url] = fetchMock.mock.calls[0];
+    expect(url).toBe('/api/sessions/abc?deleteBranch=true');
   });
 
   it('parses the usage summary', async () => {

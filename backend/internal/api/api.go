@@ -92,6 +92,7 @@ func (s *Server) Router() http.Handler {
 			r.Route("/sessions", func(r chi.Router) {
 				r.Get("/", s.handleListSessions)
 				r.Get("/{id}", s.handleGetSession)
+				r.Delete("/{id}", s.handleDeleteSession)
 				r.Get("/{id}/messages", s.handleListMessages)
 				r.Post("/{id}/messages", s.handleSendMessage)
 				r.Post("/{id}/stop", s.handleStopSession)
@@ -198,16 +199,16 @@ func (s *Server) handleGetProject(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleDeleteProject(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	p, err := s.store.GetProject(id)
-	if err != nil {
+	if _, err := s.store.GetProject(id); err != nil {
 		writeErr(w, statusForErr(err), err.Error())
 		return
 	}
-	if err := s.store.DeleteProject(id); err != nil {
+	// Manager.DeleteProject tears down each session's worktree (if any) before
+	// the cascade and broadcasts project.deleted on success.
+	if err := s.mgr.DeleteProject(id); err != nil {
 		writeErr(w, statusForErr(err), err.Error())
 		return
 	}
-	s.hub.Broadcast("project.deleted", p)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -238,13 +239,29 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid permissionMode")
 		return
 	}
-	sess, err := s.store.CreateSession(id, body.Title, body.Model, body.PermissionMode)
+	// Routed through the manager so it can provision a git worktree for the
+	// session when the project's path is inside a git repo. Non-git projects
+	// fall through to plain row creation.
+	sess, err := s.mgr.CreateSession(id, body.Title, body.Model, body.PermissionMode)
 	if err != nil {
 		writeErr(w, statusForErr(err), err.Error())
 		return
 	}
 	s.hub.Broadcast("session.status", sess)
 	writeJSON(w, http.StatusCreated, sess)
+}
+
+// handleDeleteSession removes a session row, its worktree (if any), and
+// optionally the worktree's branch. Query: ?deleteBranch=true|false (default
+// false).
+func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	deleteBranch := r.URL.Query().Get("deleteBranch") == "true"
+	if err := s.mgr.DeleteSession(id, deleteBranch); err != nil {
+		writeErr(w, statusForErr(err), err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // --- sessions ---

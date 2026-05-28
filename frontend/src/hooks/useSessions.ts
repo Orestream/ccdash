@@ -54,6 +54,12 @@ export function useSessions(projectId?: string): UseSessionsResult {
 
   useEffect(() => {
     const handler: WsEventHandler = (event) => {
+      if (event.type === 'session.deleted') {
+        const removed = event.payload;
+        if (projectId && removed.projectId !== projectId) return;
+        setSessions((prev) => prev.filter((s) => s.id !== removed.id));
+        return;
+      }
       if (event.type !== 'session.status') return;
       const updated = event.payload;
       // If scoped to a project, ignore updates for other projects.

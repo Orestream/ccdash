@@ -383,6 +383,56 @@ a {
   font-size: 0.75rem;
   color: var(--text-muted);
 }
+.session-branch {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  padding: 0.1rem 0.4rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+}
+.session-row-wrapper {
+  display: flex;
+  align-items: stretch;
+  gap: 0.35rem;
+}
+.session-row-wrapper .session-row {
+  flex: 1;
+}
+.session-delete {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  border-radius: var(--radius);
+  padding: 0 0.55rem;
+  cursor: pointer;
+  font-size: 0.8rem;
+}
+.session-delete:hover:not(:disabled) {
+  color: var(--danger, #d33);
+  border-color: var(--danger, #d33);
+}
+.session-delete:disabled {
+  opacity: 0.5;
+  cursor: progress;
+}
+.branch-badge {
+  display: inline-block;
+  margin-top: 0.2rem;
+  padding: 0.1rem 0.45rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+.branch-badge:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
 
 /* Status badge */
 .status-badge {

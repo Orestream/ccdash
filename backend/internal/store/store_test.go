@@ -60,7 +60,7 @@ func TestSessionLifecycle(t *testing.T) {
 	s := newTestStore(t)
 	p, _ := s.CreateProject("demo", "/tmp/demo")
 
-	sess, err := s.CreateSession(p.ID, "task", "claude-opus-4-7", models.ModeDefault)
+	sess, err := s.CreateSession(p.ID, "task", "claude-opus-4-7", models.ModeDefault, SessionInit{})
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}
@@ -90,12 +90,12 @@ func TestSessionModePersistence(t *testing.T) {
 	s := newTestStore(t)
 	p, _ := s.CreateProject("demo", "/tmp/demo")
 
-	sess, _ := s.CreateSession(p.ID, "task", "m", models.ModeAcceptEdits)
+	sess, _ := s.CreateSession(p.ID, "task", "m", models.ModeAcceptEdits, SessionInit{})
 	if sess.PermissionMode != models.ModeAcceptEdits {
 		t.Fatalf("expected acceptEdits on create, got %s", sess.PermissionMode)
 	}
 	// Empty mode defaults to ModeDefault.
-	def, _ := s.CreateSession(p.ID, "task2", "m", "")
+	def, _ := s.CreateSession(p.ID, "task2", "m", "", SessionInit{})
 	if def.PermissionMode != models.ModeDefault {
 		t.Fatalf("expected default mode, got %s", def.PermissionMode)
 	}
@@ -114,7 +114,7 @@ func TestSessionModePersistence(t *testing.T) {
 
 func TestCreateSessionUnknownProject(t *testing.T) {
 	s := newTestStore(t)
-	if _, err := s.CreateSession("ghost", "t", "m", models.ModeDefault); err != ErrNotFound {
+	if _, err := s.CreateSession("ghost", "t", "m", models.ModeDefault, SessionInit{}); err != ErrNotFound {
 		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
 }
@@ -122,7 +122,7 @@ func TestCreateSessionUnknownProject(t *testing.T) {
 func TestMessagesAndUsage(t *testing.T) {
 	s := newTestStore(t)
 	p, _ := s.CreateProject("demo", "/tmp/demo")
-	sess, _ := s.CreateSession(p.ID, "task", "claude-opus-4-7", models.ModeDefault)
+	sess, _ := s.CreateSession(p.ID, "task", "claude-opus-4-7", models.ModeDefault, SessionInit{})
 
 	if _, err := s.AddMessage(sess.ID, "user", "hello"); err != nil {
 		t.Fatalf("add user msg: %v", err)
@@ -160,7 +160,7 @@ func TestMessagesAndUsage(t *testing.T) {
 func TestAttachments(t *testing.T) {
 	s := newTestStore(t)
 	p, _ := s.CreateProject("demo", "/tmp/demo")
-	sess, _ := s.CreateSession(p.ID, "task", "m", models.ModeDefault)
+	sess, _ := s.CreateSession(p.ID, "task", "m", models.ModeDefault, SessionInit{})
 	msg, _ := s.AddMessage(sess.ID, "user", "see image-1")
 
 	raw := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d}
@@ -198,12 +198,66 @@ func TestAttachments(t *testing.T) {
 func TestDeleteProjectCascades(t *testing.T) {
 	s := newTestStore(t)
 	p, _ := s.CreateProject("demo", "/tmp/demo")
-	sess, _ := s.CreateSession(p.ID, "task", "m", models.ModeDefault)
+	sess, _ := s.CreateSession(p.ID, "task", "m", models.ModeDefault, SessionInit{})
 
 	if err := s.DeleteProject(p.ID); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 	if _, err := s.GetSession(sess.ID); err != ErrNotFound {
 		t.Fatalf("expected session cascade-deleted, got %v", err)
+	}
+}
+
+func TestSessionWorktreeFieldsPersist(t *testing.T) {
+	s := newTestStore(t)
+	p, _ := s.CreateProject("demo", "/tmp/demo")
+
+	init := SessionInit{
+		ID:           "sess-123",
+		WorktreePath: "/state/ccdash/worktrees/sess-123",
+		Branch:       "ccdash/sess-123",
+		BaseCommit:   "abcdef1234567890",
+	}
+	sess, err := s.CreateSession(p.ID, "task", "m", models.ModeDefault, init)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if sess.ID != init.ID {
+		t.Fatalf("expected pre-allocated id, got %s", sess.ID)
+	}
+	if sess.WorktreePath != init.WorktreePath || sess.Branch != init.Branch || sess.BaseCommit != init.BaseCommit {
+		t.Fatalf("worktree fields not stored on create: %+v", sess)
+	}
+
+	got, err := s.GetSession(sess.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.WorktreePath != init.WorktreePath || got.Branch != init.Branch || got.BaseCommit != init.BaseCommit {
+		t.Fatalf("worktree fields not read back: %+v", got)
+	}
+
+	// A session created without worktree metadata reads back as empty strings
+	// (non-git project path).
+	plain, _ := s.CreateSession(p.ID, "t2", "m", models.ModeDefault, SessionInit{})
+	plainGot, _ := s.GetSession(plain.ID)
+	if plainGot.WorktreePath != "" || plainGot.Branch != "" || plainGot.BaseCommit != "" {
+		t.Fatalf("expected empty worktree fields, got %+v", plainGot)
+	}
+}
+
+func TestDeleteSession(t *testing.T) {
+	s := newTestStore(t)
+	p, _ := s.CreateProject("demo", "/tmp/demo")
+	sess, _ := s.CreateSession(p.ID, "t", "m", models.ModeDefault, SessionInit{})
+
+	if err := s.DeleteSession(sess.ID); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if _, err := s.GetSession(sess.ID); err != ErrNotFound {
+		t.Fatalf("expected ErrNotFound after delete, got %v", err)
+	}
+	if err := s.DeleteSession("ghost"); err != ErrNotFound {
+		t.Fatalf("expected ErrNotFound for unknown id, got %v", err)
 	}
 }
