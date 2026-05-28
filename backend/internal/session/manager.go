@@ -44,9 +44,28 @@ type liveSession struct {
 	cs claude.Session
 
 	mu        sync.Mutex
+	mode      models.PermissionMode  // current answering mode, mirrored for in-turn enforcement
 	pending   map[string]pendingPerm // requestID -> request
 	autoAllow map[string]bool        // toolName -> allow always (this session)
 	thinking  strings.Builder
+}
+
+// modeAllowsTool mirrors claude's --permission-mode logic on our side so a
+// mid-turn mode change takes effect on the in-flight turn: the CLI honors
+// set_permission_mode only at the next turn boundary, so until then it keeps
+// emitting can_use_tool for the running turn. Auto allows every tool;
+// acceptEdits allows the file-editing tools; plan/default fall through to ask.
+func modeAllowsTool(mode models.PermissionMode, toolName string) bool {
+	switch mode {
+	case models.ModeAuto:
+		return true
+	case models.ModeAcceptEdits:
+		switch toolName {
+		case "Write", "Edit", "MultiEdit", "NotebookEdit":
+			return true
+		}
+	}
+	return false
 }
 
 type pendingPerm struct {
@@ -210,7 +229,10 @@ func (m *Manager) PendingPermissions(sessionID string) []models.PermissionReques
 }
 
 // SetMode changes the answering mode, persisting it and applying it to a live
-// process if one exists (best-effort).
+// process if one exists. The CLI honors set_permission_mode only on the next
+// turn, so we also mirror the mode on our side: any pending permission requests
+// the new mode auto-allows are resolved immediately, and handlePermission
+// auto-allows further in-turn requests under the same rule.
 func (m *Manager) SetMode(sessionID string, mode models.PermissionMode) (models.Session, error) {
 	if err := m.store.UpdateSessionMode(sessionID, mode); err != nil {
 		return models.Session{}, err
@@ -218,14 +240,46 @@ func (m *Manager) SetMode(sessionID string, mode models.PermissionMode) (models.
 	m.mu.Lock()
 	ls := m.live[sessionID]
 	m.mu.Unlock()
+
+	var resumeRun bool
 	if ls != nil {
+		ls.mu.Lock()
+		ls.mode = mode
+		// Snapshot pending requests the new mode allows, drop them from pending,
+		// and remember whether the queue is now empty so we can resume the turn.
+		var flushed []pendingPerm
+		for id, pp := range ls.pending {
+			if modeAllowsTool(mode, pp.req.ToolName) {
+				flushed = append(flushed, pp)
+				delete(ls.pending, id)
+			}
+		}
+		resumeRun = len(flushed) > 0 && len(ls.pending) == 0
+		ls.mu.Unlock()
+
 		_ = ls.cs.SetMode(mode.CLIPermissionMode())
+
+		// Respond + broadcast outside the lock so a slow ws subscriber can't
+		// block the manager.
+		for _, pp := range flushed {
+			_ = ls.cs.Respond(pp.req.ID, claude.DecisionAllow, pp.input, "")
+			m.hub.Broadcast("session.permission_resolved", map[string]string{
+				"sessionId": sessionID,
+				"requestId": pp.req.ID,
+				"decision":  "allow",
+			})
+		}
 	}
+
 	sess, err := m.store.GetSession(sessionID)
 	if err != nil {
 		return models.Session{}, err
 	}
-	m.hub.Broadcast("session.status", sess)
+	if resumeRun {
+		m.setStatus(&sess, models.StatusProcessing)
+	} else {
+		m.hub.Broadcast("session.status", sess)
+	}
 	return sess, nil
 }
 
@@ -427,6 +481,7 @@ func (m *Manager) ensureLive(sess models.Session) (*liveSession, error) {
 	ls := &liveSession{
 		id:        sess.ID,
 		cs:        cs,
+		mode:      sess.PermissionMode,
 		pending:   make(map[string]pendingPerm),
 		autoAllow: make(map[string]bool),
 	}
@@ -499,7 +554,7 @@ func (m *Manager) pump(ls *liveSession) {
 
 func (m *Manager) handlePermission(ls *liveSession, sess *models.Session, ev claude.Event) {
 	ls.mu.Lock()
-	auto := ls.autoAllow[ev.ToolName]
+	auto := ls.autoAllow[ev.ToolName] || modeAllowsTool(ls.mode, ev.ToolName)
 	ls.mu.Unlock()
 
 	if auto {

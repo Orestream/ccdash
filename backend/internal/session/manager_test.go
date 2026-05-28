@@ -290,6 +290,105 @@ func TestSetModeUpdatesLiveSession(t *testing.T) {
 	}
 }
 
+func TestAutoModeAllowsInTurnPermission(t *testing.T) {
+	// Switching to auto mid-turn must auto-allow further can_use_tool requests
+	// from the same turn — the CLI honors set_permission_mode only at the next
+	// turn boundary, so without the manager mirroring the mode the user would
+	// keep getting approval prompts even after flipping to auto.
+	fs := newFakeSession()
+	mgr, _, sess := setup(t, &fakeRunner{sess: fs})
+
+	_, _ = mgr.SendMessage(sess.ID, "do it", nil)
+	if _, err := mgr.SetMode(sess.ID, models.ModeAuto); err != nil {
+		t.Fatalf("set mode: %v", err)
+	}
+
+	fs.emit(claude.Event{Kind: claude.KindPermission, RequestID: "req_1", ToolName: "Bash", ToolInput: json.RawMessage(`{"command":"ls"}`)})
+	fs.emit(claude.Event{Kind: claude.KindResult})
+	fs.done()
+	mgr.Wait()
+
+	resp := fs.responses()
+	if len(resp) != 1 || !resp[0].allow || resp[0].id != "req_1" {
+		t.Fatalf("expected single allow for req_1, got %+v", resp)
+	}
+	if pending := mgr.PendingPermissions(sess.ID); len(pending) != 0 {
+		t.Fatalf("expected no pending after auto-allow, got %+v", pending)
+	}
+}
+
+func TestSetModeFlushesPendingRequests(t *testing.T) {
+	// A permission request that arrived before the mode flip should also be
+	// auto-resolved when the new mode allows it, and the session should go
+	// back to processing (was awaiting_approval).
+	fs := newFakeSession()
+	mgr, st, sess := setup(t, &fakeRunner{sess: fs})
+
+	_, _ = mgr.SendMessage(sess.ID, "do it", nil)
+	fs.emit(claude.Event{Kind: claude.KindPermission, RequestID: "req_1", ToolName: "Bash", ToolInput: json.RawMessage(`{"command":"ls"}`)})
+	waitForStatus(t, st, sess.ID, models.StatusAwaitingApproval)
+
+	if _, err := mgr.SetMode(sess.ID, models.ModeAuto); err != nil {
+		t.Fatalf("set mode: %v", err)
+	}
+	waitForStatus(t, st, sess.ID, models.StatusProcessing)
+	if pending := mgr.PendingPermissions(sess.ID); len(pending) != 0 {
+		t.Fatalf("expected pending flushed, got %+v", pending)
+	}
+
+	resp := fs.responses()
+	if len(resp) != 1 || !resp[0].allow || resp[0].id != "req_1" {
+		t.Fatalf("expected allow forwarded for the flushed request, got %+v", resp)
+	}
+
+	fs.emit(claude.Event{Kind: claude.KindResult})
+	fs.done()
+	mgr.Wait()
+}
+
+func TestSetModeAcceptEditsOnlyAllowsEditTools(t *testing.T) {
+	// acceptEdits should let edit tools through but still surface a Bash
+	// request as a pending approval.
+	fs := newFakeSession()
+	mgr, st, sess := setup(t, &fakeRunner{sess: fs})
+
+	_, _ = mgr.SendMessage(sess.ID, "do it", nil)
+	if _, err := mgr.SetMode(sess.ID, models.ModeAcceptEdits); err != nil {
+		t.Fatalf("set mode: %v", err)
+	}
+
+	fs.emit(claude.Event{Kind: claude.KindPermission, RequestID: "req_edit", ToolName: "Edit", ToolInput: json.RawMessage(`{"file_path":"/x"}`)})
+	fs.emit(claude.Event{Kind: claude.KindPermission, RequestID: "req_bash", ToolName: "Bash", ToolInput: json.RawMessage(`{"command":"ls"}`)})
+	waitForStatus(t, st, sess.ID, models.StatusAwaitingApproval)
+
+	if pending := mgr.PendingPermissions(sess.ID); len(pending) != 1 || pending[0].ToolName != "Bash" {
+		t.Fatalf("expected only Bash pending, got %+v", pending)
+	}
+
+	if err := mgr.RespondPermission(sess.ID, "req_bash", false, false, "no"); err != nil {
+		t.Fatalf("respond: %v", err)
+	}
+	fs.done()
+	mgr.Wait()
+
+	resp := fs.responses()
+	if len(resp) != 2 {
+		t.Fatalf("expected 2 responses, got %+v", resp)
+	}
+	var sawAllowEdit, sawDenyBash bool
+	for _, r := range resp {
+		if r.id == "req_edit" && r.allow {
+			sawAllowEdit = true
+		}
+		if r.id == "req_bash" && !r.allow {
+			sawDenyBash = true
+		}
+	}
+	if !sawAllowEdit || !sawDenyBash {
+		t.Fatalf("unexpected responses: %+v", resp)
+	}
+}
+
 func TestStartError(t *testing.T) {
 	runner := &fakeRunner{startErr: errors.New("spawn failed")}
 	mgr, st, sess := setup(t, runner)
