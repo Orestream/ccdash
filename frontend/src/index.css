@@ -714,7 +714,7 @@ a {
 }
 .approval-request {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 1rem;
   padding: 0.65rem 0.8rem;
@@ -728,6 +728,7 @@ a {
 }
 .approval-summary {
   font-weight: 600;
+  overflow-wrap: anywhere;
 }
 .approval-meta {
   display: flex;
@@ -742,11 +743,55 @@ a {
   font-weight: 600;
   color: var(--text);
 }
-.approval-input {
+.approval-details {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  margin-top: 0.4rem;
+  max-height: 14rem;
+  overflow-y: auto;
+}
+.approval-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 0;
+}
+.approval-detail-label {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+.approval-detail-value {
+  margin: 0;
+  padding: 0.4rem 0.55rem;
   font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  font-size: 0.78rem;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 10rem;
+  overflow-y: auto;
+}
+.approval-detail-old .approval-detail-value {
+  border-color: rgba(248, 81, 73, 0.4);
+  background: rgba(248, 81, 73, 0.08);
+}
+.approval-detail-old .approval-detail-value::before {
+  content: '− ';
+  color: var(--danger);
+}
+.approval-detail-new .approval-detail-value {
+  border-color: rgba(63, 185, 80, 0.4);
+  background: rgba(63, 185, 80, 0.08);
+}
+.approval-detail-new .approval-detail-value::before {
+  content: '+ ';
+  color: var(--status-done);
 }
 .approval-actions {
   display: flex;

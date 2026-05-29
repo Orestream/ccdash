@@ -64,12 +64,108 @@ function parseAskUserQuestion(input: Record<string, unknown>): AskQuestion[] | n
   return out;
 }
 
-function compactInput(input: Record<string, unknown>): string {
-  try {
-    return JSON.stringify(input);
-  } catch {
-    return '';
+// Keys that the backend already folds into req.summary (see summarize() in
+// backend/internal/session/manager.go). We skip them in the details view so the
+// header isn't repeated below.
+const SUMMARY_KEYS = new Set([
+  'command',
+  'file_path',
+  'path',
+  'pattern',
+  'url',
+  'description',
+  'prompt',
+]);
+
+interface DetailRow {
+  label?: string;
+  value: string;
+  variant?: 'old' | 'new' | 'code' | 'plain';
+}
+
+// describeInput turns a tool's raw input into a tidy list of rows for the
+// approval menu. Returns null when there's nothing useful to show, which lets
+// the caller hide the details block entirely instead of rendering "{}".
+function describeInput(
+  toolName: string,
+  input: Record<string, unknown>,
+): DetailRow[] | null {
+  const str = (k: string) =>
+    typeof input[k] === 'string' ? (input[k] as string) : undefined;
+
+  switch (toolName) {
+    case 'Edit': {
+      const rows: DetailRow[] = [];
+      if (input.replace_all === true) rows.push({ label: 'replace_all', value: 'true' });
+      const oldStr = str('old_string');
+      const newStr = str('new_string');
+      if (oldStr !== undefined) rows.push({ value: oldStr, variant: 'old' });
+      if (newStr !== undefined) rows.push({ value: newStr, variant: 'new' });
+      return rows.length ? rows : null;
+    }
+    case 'MultiEdit': {
+      const edits = (input as { edits?: unknown }).edits;
+      if (!Array.isArray(edits)) return null;
+      const rows: DetailRow[] = [];
+      edits.forEach((e, i) => {
+        if (!e || typeof e !== 'object') return;
+        const o = e as Record<string, unknown>;
+        const oldStr = typeof o.old_string === 'string' ? o.old_string : undefined;
+        const newStr = typeof o.new_string === 'string' ? o.new_string : undefined;
+        if (oldStr === undefined && newStr === undefined) return;
+        if (edits.length > 1) rows.push({ label: `edit ${i + 1}`, value: '' });
+        if (oldStr !== undefined) rows.push({ value: oldStr, variant: 'old' });
+        if (newStr !== undefined) rows.push({ value: newStr, variant: 'new' });
+      });
+      return rows.length ? rows : null;
+    }
+    case 'Write': {
+      const content = str('content');
+      return content === undefined ? null : [{ value: content, variant: 'code' }];
+    }
+    case 'Bash': {
+      const rows: DetailRow[] = [];
+      const desc = str('description');
+      const cmd = str('command');
+      if (desc) rows.push({ label: 'description', value: desc });
+      if (cmd !== undefined) rows.push({ value: cmd, variant: 'code' });
+      return rows.length ? rows : null;
+    }
+    default: {
+      const rows: DetailRow[] = [];
+      for (const [k, v] of Object.entries(input)) {
+        if (SUMMARY_KEYS.has(k)) continue;
+        let value: string;
+        if (typeof v === 'string') value = v;
+        else if (v === null || v === undefined) continue;
+        else {
+          try {
+            value = JSON.stringify(v, null, 2);
+          } catch {
+            continue;
+          }
+        }
+        rows.push({ label: k, value });
+      }
+      return rows.length ? rows : null;
+    }
   }
+}
+
+function ToolInputDetails({ rows }: { rows: DetailRow[] }) {
+  return (
+    <div className="approval-details">
+      {rows.map((row, i) => (
+        <div
+          key={i}
+          className={`approval-detail approval-detail-${row.variant ?? 'plain'}`}
+        >
+          {row.label && <span className="approval-detail-label">{row.label}</span>}
+          {row.value !== '' && <pre className="approval-detail-value">{row.value}</pre>}
+        </div>
+      ))}
+    </div>
+  );
 }
 
 export function ApprovalMenu({ requests, onDecide, pendingId }: ApprovalMenuProps) {
@@ -92,14 +188,15 @@ export function ApprovalMenu({ requests, onDecide, pendingId }: ApprovalMenuProp
             />
           );
         }
+        const details = describeInput(req.toolName, req.input);
         return (
           <div key={req.id} className="approval-request" data-request-id={req.id}>
             <div className="approval-body">
               <div className="approval-summary">{req.summary}</div>
               <div className="approval-meta">
                 <span className="approval-tool">{req.toolName}</span>
-                <code className="approval-input">{compactInput(req.input)}</code>
               </div>
+              {details && <ToolInputDetails rows={details} />}
             </div>
             <div className="approval-actions">
               <button

@@ -52,11 +52,34 @@ describe('ApprovalMenu', () => {
     expect(container).toBeEmptyDOMElement();
   });
 
-  it('renders the summary, tool name and a compact input view', () => {
+  it('renders the summary, tool name and a per-tool details view', () => {
     render(<ApprovalMenu requests={requests} onDecide={() => {}} />);
     expect(screen.getByText('Bash: git status')).toBeInTheDocument();
     expect(screen.getByText('Bash')).toBeInTheDocument();
-    expect(screen.getByText(/"command":"git status"/)).toBeInTheDocument();
+    // Bash details show the bare command, not raw JSON.
+    expect(screen.getByText('git status')).toBeInTheDocument();
+    expect(screen.queryByText(/"command":/)).toBeNull();
+  });
+
+  it('renders Edit as a diff of old_string / new_string', () => {
+    const edit: PermissionRequest = {
+      id: 'edit1',
+      sessionId: 's1',
+      toolName: 'Edit',
+      input: {
+        file_path: '/tmp/x.css',
+        old_string: '.foo { color: red; }',
+        new_string: '.foo { color: blue; }',
+      },
+      summary: 'Edit: /tmp/x.css',
+      suggestions: ['allow', 'allow_always', 'deny'],
+      createdAt: '2026-05-25T12:00:40Z',
+    };
+    render(<ApprovalMenu requests={[edit]} onDecide={() => {}} />);
+    expect(screen.getByText('.foo { color: red; }')).toBeInTheDocument();
+    expect(screen.getByText('.foo { color: blue; }')).toBeInTheDocument();
+    // file_path is in the summary — don't repeat it in the details.
+    expect(screen.queryByText('/tmp/x.css', { selector: '.approval-detail-value' })).toBeNull();
   });
 
   it('fires allow / allow_always / deny with the request id', () => {
