@@ -4,16 +4,20 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  acceptSession,
   ApiError,
   attachmentUrl,
+  getProject,
   getSession,
   listMessages,
   listPermissions,
+  previewSession,
   renameSession,
   respondPermission,
   sendMessage,
   setSessionMode,
   stopSession,
+  unpreviewSession,
 } from '../api/client';
 import type {
   Message,
@@ -27,6 +31,7 @@ import { useSessionStream } from '../hooks/useSessionStream';
 import { StatusBadge } from './StatusBadge';
 import { ModeSelector } from './ModeSelector';
 import { ApprovalMenu } from './ApprovalMenu';
+import { ConfirmDialog } from './ConfirmDialog';
 import { parseToolContent } from './toolContent';
 import {
   imagesFromClipboard,
@@ -82,6 +87,12 @@ export function SessionView({ sessionId }: SessionViewProps) {
   // Guards the title editor's exit so Enter/Escape and the unmount blur don't
   // double-fire (see finishEditTitle).
   const editingRef = useRef(false);
+  const [projectPath, setProjectPath] = useState<string>('');
+  const [previewBusy, setPreviewBusy] = useState(false);
+  const [acceptBusy, setAcceptBusy] = useState(false);
+  const [cancelBusy, setCancelBusy] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+  const [showAcceptConfirm, setShowAcceptConfirm] = useState(false);
 
   // Mirror the live draft into a ref so the session-switch effect can persist
   // the latest value without re-running on every keystroke.
@@ -139,6 +150,20 @@ export function SessionView({ sessionId }: SessionViewProps) {
       });
     return () => controller.abort();
   }, [sessionId, resetStream]);
+
+  // Fetch the project path so the preview confirm modal can show where the
+  // diff will be applied. Best-effort; if it fails the modal falls back to a
+  // generic phrase.
+  useEffect(() => {
+    if (!session?.projectId) return;
+    const controller = new AbortController();
+    getProject(session.projectId, controller.signal)
+      .then((p) => setProjectPath(p.path))
+      .catch(() => {
+        /* best-effort */
+      });
+    return () => controller.abort();
+  }, [session?.projectId]);
 
   // Recover pending permission requests on mount and whenever the WS (re)connects.
   useEffect(() => {
@@ -416,6 +441,59 @@ export function SessionView({ sessionId }: SessionViewProps) {
     [sessionId],
   );
 
+  const handlePreview = useCallback(async () => {
+    setPreviewError(null);
+    setPreviewBusy(true);
+    try {
+      const { session: updated } = await previewSession(sessionId);
+      setSession((prev) => ({ ...prev, ...updated }));
+    } catch (err) {
+      const msg =
+        err instanceof ApiError || err instanceof Error
+          ? err.message
+          : 'failed to apply preview';
+      setPreviewError(msg);
+    } finally {
+      setPreviewBusy(false);
+    }
+  }, [sessionId]);
+
+  const handleAcceptConfirm = useCallback(async () => {
+    setActionError(null);
+    setAcceptBusy(true);
+    try {
+      const { session: updated } = await acceptSession(sessionId);
+      setSession((prev) => ({ ...prev, ...updated }));
+      setShowAcceptConfirm(false);
+    } catch (err) {
+      const msg =
+        err instanceof ApiError || err instanceof Error
+          ? err.message
+          : 'failed to accept session';
+      setActionError(msg);
+      setShowAcceptConfirm(false);
+    } finally {
+      setAcceptBusy(false);
+    }
+  }, [sessionId]);
+
+  const handleCancelPreview = useCallback(async () => {
+    setPreviewError(null);
+    setCancelBusy(true);
+    try {
+      const { session: updated } = await unpreviewSession(sessionId);
+      setSession((prev) => ({ ...prev, ...updated }));
+    } catch (err) {
+      const msg =
+        err instanceof ApiError || err instanceof Error
+          ? err.message
+          : 'failed to cancel preview';
+      setPreviewError(msg);
+    } finally {
+      setCancelBusy(false);
+    }
+  }, [sessionId]);
+
   if (loading) {
     return (
       <section className="session-view">
@@ -468,6 +546,50 @@ export function SessionView({ sessionId }: SessionViewProps) {
             >
               {session.branch}
             </button>
+          )}
+          {session?.worktreePath && (
+            <span className="preview-actions">
+              {session.previewState === 'applied' ? (
+                <>
+                  <button
+                    type="button"
+                    className="primary"
+                    onClick={() => setShowAcceptConfirm(true)}
+                    disabled={acceptBusy || cancelBusy}
+                    title="Commit preview to main and tear down the worktree"
+                  >
+                    {acceptBusy ? 'Accepting…' : 'Accept'}
+                  </button>
+                  <button
+                    type="button"
+                    className="danger"
+                    onClick={() => void handleCancelPreview()}
+                    disabled={cancelBusy || acceptBusy}
+                    title="Revert preview from main checkout"
+                  >
+                    {cancelBusy ? 'Cancelling…' : 'Cancel'}
+                  </button>
+                </>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => void handlePreview()}
+                  disabled={previewBusy}
+                  title={
+                    projectPath
+                      ? `Apply session diff to ${projectPath} as uncommitted edits`
+                      : 'Apply session diff to main checkout as uncommitted edits'
+                  }
+                >
+                  {previewBusy ? 'Applying…' : 'Test'}
+                </button>
+              )}
+              {previewError && (
+                <span className="preview-error" role="alert">
+                  {previewError}
+                </span>
+              )}
+            </span>
           )}
         </div>
         <div className="session-actions">
@@ -605,6 +727,16 @@ export function SessionView({ sessionId }: SessionViewProps) {
             : 'Claude is working — your message will be queued for the next turn.'}
         </p>
       )}
+
+      <ConfirmDialog
+        open={showAcceptConfirm}
+        title="Commit changes to main and delete the worktree?"
+        body="This commits the previewed changes on the project's main checkout and tears down the session's worktree. This cannot be undone from ccdash."
+        confirmLabel="Accept"
+        busy={acceptBusy}
+        onConfirm={() => void handleAcceptConfirm()}
+        onCancel={() => setShowAcceptConfirm(false)}
+      />
     </section>
   );
 }

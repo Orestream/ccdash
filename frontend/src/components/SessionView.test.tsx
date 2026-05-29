@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { SessionView } from './SessionView';
 import { parseToolContent } from './toolContent';
 import type { Message, PermissionRequest, Session } from '../types';
@@ -16,6 +16,7 @@ const session: Session = {
   worktreePath: '',
   branch: '',
   baseCommit: '',
+  previewState: '',
   createdAt: '2026-05-25T12:00:00Z',
   updatedAt: '2026-05-25T12:01:00Z',
 };
@@ -197,6 +198,147 @@ describe('SessionView composer', () => {
       'title',
       '/home/robin/priv/ccdash/frontend/src/App.tsx',
     );
+  });
+});
+
+describe('SessionView preview flow', () => {
+  const worktreeSession: Session = {
+    ...session,
+    status: 'idle',
+    worktreePath: '/tmp/wt',
+    branch: 'ccdash/abc',
+    baseCommit: 'deadbeef',
+    previewState: '',
+  };
+
+  beforeEach(() => {
+    vi.stubGlobal('WebSocket', StubWebSocket as unknown as typeof WebSocket);
+    vi.spyOn(client, 'listMessages').mockResolvedValue([]);
+    vi.spyOn(client, 'listPermissions').mockResolvedValue([] as PermissionRequest[]);
+    vi.spyOn(client, 'getProject').mockResolvedValue({
+      id: 'p1',
+      name: 'demo',
+      path: '/repo',
+      gitMode: 'worktree',
+      createdAt: '2026-05-25T12:00:00Z',
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it('shows a Test button when worktreePath is set and no preview is active', async () => {
+    vi.spyOn(client, 'getSession').mockResolvedValue(worktreeSession);
+    render(<SessionView sessionId="s1" />);
+
+    expect(await screen.findByRole('button', { name: /^Test$/ })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Accept$/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /^Cancel$/ })).toBeNull();
+  });
+
+  it('hides preview controls when there is no worktree', async () => {
+    vi.spyOn(client, 'getSession').mockResolvedValue(session);
+    render(<SessionView sessionId="s1" />);
+    await screen.findByLabelText('Prompt');
+    expect(screen.queryByRole('button', { name: /^Test$/ })).toBeNull();
+  });
+
+  it('Test button POSTs preview immediately and swaps to Accept/Cancel', async () => {
+    vi.spyOn(client, 'getSession').mockResolvedValue(worktreeSession);
+    const previewSpy = vi
+      .spyOn(client, 'previewSession')
+      .mockResolvedValue({
+        session: { ...worktreeSession, previewState: 'applied' },
+      });
+
+    render(<SessionView sessionId="s1" />);
+    const testBtn = await screen.findByRole('button', { name: /^Test$/ });
+    fireEvent.click(testBtn);
+
+    await waitFor(() => expect(previewSpy).toHaveBeenCalledWith('s1'));
+    expect(screen.queryByText('Apply changes to main checkout?')).toBeNull();
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /^Accept$/ })).toBeInTheDocument(),
+    );
+    expect(screen.queryByRole('button', { name: /^Test$/ })).toBeNull();
+  });
+
+  it('shows Accept + Cancel when previewState is "applied"', async () => {
+    vi.spyOn(client, 'getSession').mockResolvedValue({
+      ...worktreeSession,
+      previewState: 'applied',
+    });
+    render(<SessionView sessionId="s1" />);
+
+    expect(await screen.findByRole('button', { name: /^Accept$/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^Cancel$/ })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Test$/ })).toBeNull();
+  });
+
+  it('Cancel calls DELETE preview without confirmation', async () => {
+    vi.spyOn(client, 'getSession').mockResolvedValue({
+      ...worktreeSession,
+      previewState: 'applied',
+    });
+    const spy = vi.spyOn(client, 'unpreviewSession').mockResolvedValue({
+      session: { ...worktreeSession, previewState: '' },
+    });
+
+    render(<SessionView sessionId="s1" />);
+    const cancelBtn = await screen.findByRole('button', { name: /^Cancel$/ });
+    fireEvent.click(cancelBtn);
+
+    await waitFor(() => expect(spy).toHaveBeenCalledWith('s1'));
+  });
+
+  it('Accept opens a confirm modal and POSTs accept', async () => {
+    vi.spyOn(client, 'getSession').mockResolvedValue({
+      ...worktreeSession,
+      previewState: 'applied',
+    });
+    const accepted: Session = {
+      ...worktreeSession,
+      status: 'done',
+      worktreePath: '',
+      branch: '',
+      previewState: '',
+    };
+    const spy = vi
+      .spyOn(client, 'acceptSession')
+      .mockResolvedValue({ session: accepted });
+
+    render(<SessionView sessionId="s1" />);
+    const acceptBtn = await screen.findByRole('button', { name: /^Accept$/ });
+    fireEvent.click(acceptBtn);
+
+    // Once the modal is open, scope the confirm click to within the dialog so
+    // we don't ambiguously match the header's Accept button.
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.click(within(dialog).getByRole('button', { name: /^Accept$/ }));
+
+    await waitFor(() => expect(spy).toHaveBeenCalledWith('s1'));
+    // Branch badge cleared and Accept/Cancel gone.
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: /^Cancel$/ })).toBeNull(),
+    );
+  });
+
+  it('surfaces a 409 conflict error from preview inline next to the Test button', async () => {
+    vi.spyOn(client, 'getSession').mockResolvedValue(worktreeSession);
+    vi.spyOn(client, 'previewSession').mockRejectedValue(
+      new client.ApiError(409, 'patch failed: merge conflict'),
+    );
+
+    render(<SessionView sessionId="s1" />);
+    fireEvent.click(await screen.findByRole('button', { name: /^Test$/ }));
+
+    expect(
+      await screen.findByText('patch failed: merge conflict'),
+    ).toBeInTheDocument();
+    // Test button is still present — the error is inline, not a blocking modal.
+    expect(screen.getByRole('button', { name: /^Test$/ })).toBeInTheDocument();
   });
 });
 

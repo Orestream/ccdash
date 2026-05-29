@@ -53,10 +53,33 @@ COUNT=$(git diff --cached --name-only | wc -l | tr -d ' ')
 if [ "$COUNT" = "0" ]; then
   exit 0
 fi
-MSG="chore: auto-commit ($COUNT files, tests green)
 
-Committed automatically by the ccdash Stop hook after a passing test + lint run.
+FALLBACK="chore: auto-commit ($COUNT files, tests green)"
+MSG=""
 
-Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
-git commit -m "$MSG" >>"$LOG" 2>&1 && log "committed $COUNT files"
+# Try to generate a commit message by piping the staged diff to `claude -p`.
+# Set CCDASH_AUTOCOMMIT=0 so the inner claude doesn't recursively trigger
+# another Stop hook + commit attempt. Falls back to a fixed message on any
+# failure (claude missing, non-zero exit, empty/too-long output).
+if command -v claude >/dev/null 2>&1; then
+  DIFF=$(git diff --cached)
+  RAW=$(printf '%s' "$DIFF" | CCDASH_AUTOCOMMIT=0 claude -p "Write a single-line conventional-commit-style message (under 70 chars) describing this diff. Output only the message, no quotes, no explanation." 2>>"$LOG")
+  # Take first non-empty line, trim whitespace.
+  CANDIDATE=$(printf '%s\n' "$RAW" | awk 'NF { sub(/^[[:space:]]+/, ""); sub(/[[:space:]]+$/, ""); print; exit }')
+  LEN=${#CANDIDATE}
+  if [ -n "$CANDIDATE" ] && [ "$LEN" -le 120 ]; then
+    MSG="$CANDIDATE"
+    log "generated commit message via claude -p ($LEN chars)"
+  else
+    log "claude -p produced unusable output (len=$LEN); using fallback message"
+  fi
+else
+  log "claude not on PATH; using fallback message"
+fi
+
+if [ -z "$MSG" ]; then
+  MSG="$FALLBACK"
+fi
+
+git commit -m "$MSG" >>"$LOG" 2>&1 && log "committed $COUNT files: $MSG"
 exit 0

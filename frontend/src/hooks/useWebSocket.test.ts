@@ -14,6 +14,7 @@ const sessionPayload: Session = {
   worktreePath: '',
   branch: '',
   baseCommit: '',
+  previewState: '',
   createdAt: '2026-05-25T12:00:00Z',
   updatedAt: '2026-05-25T12:01:00Z',
 };

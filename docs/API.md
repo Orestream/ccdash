@@ -23,9 +23,20 @@ are `camelCase`.
   "id": "uuid",
   "name": "My App",
   "path": "/home/robin/code/my-app",
+  "gitMode": "worktree",
   "createdAt": "2026-05-25T12:00:00Z"
 }
 ```
+
+`gitMode` controls how new sessions provision their working tree:
+
+- `worktree` (default) — each session gets its own `git worktree add -b ccdash/<id8>`
+  off the project's HEAD; `claude` runs in that worktree's path. Multiple
+  sessions on one repo can't clobber each other and the user can preview/accept
+  a session's diff via the preview endpoints below.
+- `default` — sessions skip worktree provisioning entirely and `claude` runs
+  directly in `project.path`. The session's `worktreePath`, `branch`, and
+  `baseCommit` stay empty; the preview/accept endpoints reject the session.
 
 ### Session
 ```json
@@ -40,10 +51,17 @@ are `camelCase`.
   "worktreePath": "/home/robin/.local/state/ccdash/worktrees/<session-id>",
   "branch": "ccdash/abcd1234",
   "baseCommit": "0123456789abcdef…",
+  "previewState": "",
   "createdAt": "2026-05-25T12:00:00Z",
   "updatedAt": "2026-05-25T12:01:00Z"
 }
 ```
+
+`previewState` is `""` when the session has no preview, or `"applied"` when
+the session's diff (`git diff main...<branch>`) has been applied as uncommitted
+edits onto `project.path` so the user can rebuild and test it. Only one
+session per project can be in the `applied` state at a time. The stored patch
+itself is a DB-only blob and is not returned in the API.
 
 `worktreePath`, `branch`, and `baseCommit` are populated when the session's
 project is inside a git repo: on session creation the backend runs
@@ -159,8 +177,9 @@ omitted; `resetsAt` may be absent.
 |--------|------|------|---------|
 | GET    | `/api/health` | — | `{ "status": "ok", "version": "..." }` |
 | GET    | `/api/projects` | — | `Project[]` |
-| POST   | `/api/projects` | `{ "name", "path" }` | `Project` (201) |
+| POST   | `/api/projects` | `{ "name", "path", "gitMode?" }` | `Project` (201) |
 | GET    | `/api/projects/{id}` | — | `Project` |
+| PATCH  | `/api/projects/{id}` | `{ "gitMode" }` | `Project` (changes gitMode) |
 | DELETE | `/api/projects/{id}` | — | 204 |
 | GET    | `/api/projects/{id}/sessions` | — | `Session[]` |
 | POST   | `/api/projects/{id}/sessions` | `{ "title?", "model?", "permissionMode?" }` | `Session` (201) |
@@ -175,9 +194,32 @@ omitted; `resetsAt` may be absent.
 | GET    | `/api/sessions/{id}/permissions` | — | `PermissionRequest[]` (currently pending) |
 | POST   | `/api/sessions/{id}/permissions/{requestId}` | `{ "decision": "allow"｜"allow_always"｜"deny", "message?", "answers?" }` | `{ "ok": true }` |
 | GET    | `/api/sessions/{id}/usage` | — | `UsageRecord[]` |
+| POST   | `/api/sessions/{id}/preview` | — | `{ "session": Session }` (applies the worktree's diff to `project.path`; sets `previewState` to `"applied"`) |
+| DELETE | `/api/sessions/{id}/preview` | — | `{ "session": Session }` (reverses an applied preview) |
+| POST   | `/api/sessions/{id}/accept` | — | `{ "session": Session }` (commits the applied preview onto `project.path`, removes the session's worktree+branch, marks it `done`) |
 | GET    | `/api/attachments/{id}` | — | raw image bytes (`Content-Type` is the stored media type) |
 | GET    | `/api/usage` | — | `UsageSummary` |
 | GET    | `/api/usage/limits` | — | `Utilization` (subscription /usage; 502 if unavailable, 501 if unconfigured) |
+
+Preview/accept semantics:
+
+- `POST /api/sessions/{id}/preview` computes `git diff main...<session-branch>`
+  against the project's repo root and applies the patch to `project.path` as
+  uncommitted edits. The session's `previewState` flips to `"applied"` and a
+  `session.status` event fans out. Errors: 404 if the session does not exist;
+  400 if the session has no worktree (`gitMode: "default"` or non-git project),
+  the preview is already applied, or the diff is empty; 409 if another session
+  in the same project is already applied; 500 with the git error if the patch
+  doesn't apply cleanly.
+- `DELETE /api/sessions/{id}/preview` reverses the stored patch on
+  `project.path` and clears `previewState`. 400 if the session is not in the
+  applied state.
+- `POST /api/sessions/{id}/accept` generates a one-line commit message from the
+  stored patch (the backend shells out to `claude -p`; on failure it falls
+  back to `ccdash: applied changes from session`), commits the changes onto
+  `project.path`, removes the session's worktree and branch, clears
+  `worktreePath`/`branch`/`baseCommit`, sets `status` to `done`, and clears
+  `previewState`.
 
 `decision` semantics: `allow` approves this one request; `allow_always` approves
 it and auto-approves further requests for the same tool in this session;
@@ -213,7 +255,7 @@ need to send anything (server → client only for now). Each event:
 
 ```json
 {
-  "type": "session.status | session.message | session.delta | session.permission | session.permission_resolved | session.usage | session.deleted | project.created | project.deleted",
+  "type": "session.status | session.message | session.delta | session.permission | session.permission_resolved | session.usage | session.deleted | project.created | project.updated | project.deleted",
   "ts": "2026-05-25T12:00:00Z",
   "payload": { }
 }
@@ -237,7 +279,11 @@ Event payloads:
 - `session.usage` → a full `UsageRecord`.
 - `session.deleted` → a full `Session` object (the row was removed; its
   worktree, if any, has been cleaned up).
-- `project.created` / `project.deleted` → a full `Project` object.
+- `project.created` / `project.updated` / `project.deleted` → a full `Project` object.
+
+Preview/accept transitions reuse `session.status` (the full session row is
+broadcast on every state change), so a client that already merges
+`session.status` events does not need to handle a separate event type.
 
 The frontend should treat the WebSocket as the live source of truth and fall back to
 REST polling if the socket drops. On (re)connect it should also

@@ -7,7 +7,13 @@ import type { Project, Session } from '../types';
 import * as client from '../api/client';
 
 const projects: Project[] = [
-  { id: 'p1', name: 'smoke', path: '/tmp', createdAt: '2026-05-25T12:00:00Z' },
+  {
+    id: 'p1',
+    name: 'smoke',
+    path: '/tmp',
+    gitMode: 'worktree',
+    createdAt: '2026-05-25T12:00:00Z',
+  },
 ];
 
 function makeSession(id: string, title: string, updatedAt: string): Session {
@@ -22,6 +28,7 @@ function makeSession(id: string, title: string, updatedAt: string): Session {
     worktreePath: '',
     branch: '',
     baseCommit: '',
+    previewState: '',
     createdAt: '2026-05-25T12:00:00Z',
     updatedAt,
   };
@@ -88,6 +95,71 @@ describe('Sidebar', () => {
       .map((l) => l.textContent);
     expect(labels).toEqual(['newest', 'middle', 'oldest']);
     expect(screen.queryByText('ancient')).toBeNull();
+  });
+
+  it('new-project form defaults to worktree git-mode and submits it', async () => {
+    vi.spyOn(client, 'listSessions').mockResolvedValue([]);
+    const created: Project = {
+      id: 'p9',
+      name: 'My New',
+      path: '/repo/new',
+      gitMode: 'worktree',
+      createdAt: '2026-05-25T13:00:00Z',
+    };
+    const spy = vi.spyOn(client, 'createProject').mockResolvedValue(created);
+
+    render(
+      <MemoryRouter>
+        <Sidebar />
+      </MemoryRouter>,
+    );
+
+    // Worktree is the default — its radio button starts active.
+    const worktreeBtn = await screen.findByRole('radio', { name: 'Worktree' });
+    expect(worktreeBtn).toHaveAttribute('aria-checked', 'true');
+
+    await userEvent.type(screen.getByLabelText('Project name'), 'My New');
+    await userEvent.type(screen.getByLabelText('Project path'), '/repo/new');
+    await userEvent.click(screen.getByRole('button', { name: 'Create project' }));
+
+    await waitFor(() =>
+      expect(spy).toHaveBeenCalledWith({
+        name: 'My New',
+        path: '/repo/new',
+        gitMode: 'worktree',
+      }),
+    );
+  });
+
+  it('allows switching git-mode to Direct before submitting', async () => {
+    vi.spyOn(client, 'listSessions').mockResolvedValue([]);
+    const created: Project = {
+      id: 'p9',
+      name: 'D',
+      path: '/repo/d',
+      gitMode: 'default',
+      createdAt: '2026-05-25T13:00:00Z',
+    };
+    const spy = vi.spyOn(client, 'createProject').mockResolvedValue(created);
+
+    render(
+      <MemoryRouter>
+        <Sidebar />
+      </MemoryRouter>,
+    );
+
+    await userEvent.type(await screen.findByLabelText('Project name'), 'D');
+    await userEvent.type(screen.getByLabelText('Project path'), '/repo/d');
+    await userEvent.click(screen.getByRole('radio', { name: 'Direct' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Create project' }));
+
+    await waitFor(() =>
+      expect(spy).toHaveBeenCalledWith({
+        name: 'D',
+        path: '/repo/d',
+        gitMode: 'default',
+      }),
+    );
   });
 
   it('quick-add creates a session and navigates to it', async () => {

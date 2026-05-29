@@ -7,10 +7,12 @@ import {
   createSession,
   deleteSession,
   getProject,
+  updateProject,
 } from '../api/client';
-import type { Project } from '../types';
+import type { Project, ProjectGitMode } from '../types';
 import { useSessions } from '../hooks/useSessions';
 import { StatusBadge } from './StatusBadge';
+import { GitModeSelector } from './GitModeSelector';
 
 export interface SessionListProps {
   projectId: string;
@@ -22,6 +24,8 @@ export function SessionList({ projectId }: SessionListProps) {
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [gitModeBusy, setGitModeBusy] = useState(false);
+  const [gitModeError, setGitModeError] = useState<string | null>(null);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -49,6 +53,24 @@ export function SessionList({ projectId }: SessionListProps) {
       setCreateError(msg);
     } finally {
       setCreating(false);
+    }
+  };
+
+  const handleGitModeChange = async (mode: ProjectGitMode) => {
+    if (!project || project.gitMode === mode || gitModeBusy) return;
+    setGitModeBusy(true);
+    setGitModeError(null);
+    try {
+      const updated = await updateProject(project.id, { gitMode: mode });
+      setProject(updated);
+    } catch (err) {
+      const msg =
+        err instanceof ApiError || err instanceof Error
+          ? err.message
+          : 'failed to update project';
+      setGitModeError(msg);
+    } finally {
+      setGitModeBusy(false);
     }
   };
 
@@ -82,12 +104,27 @@ export function SessionList({ projectId }: SessionListProps) {
         <div>
           <h1>{project ? project.name : 'Sessions'}</h1>
           {project && <p className="muted">{project.path}</p>}
+          {project && (
+            <div className="project-settings">
+              <span className="project-settings-label">Git mode</span>
+              <GitModeSelector
+                mode={project.gitMode}
+                onChange={(m) => void handleGitModeChange(m)}
+                disabled={gitModeBusy}
+              />
+            </div>
+          )}
         </div>
         <button onClick={handleCreate} disabled={creating}>
           {creating ? 'Creating…' : 'New session'}
         </button>
       </header>
 
+      {gitModeError && (
+        <p className="error" role="alert">
+          {gitModeError}
+        </p>
+      )}
       {createError && (
         <p className="error" role="alert">
           {createError}

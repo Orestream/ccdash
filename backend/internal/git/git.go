@@ -19,6 +19,14 @@ import (
 	"time"
 )
 
+// stdinRunner is an optional capability: Runners that can pipe a stdin payload
+// (for `git apply`) implement this so callers don't have to construct a custom
+// command. The exec Runner satisfies it; tests can leave it unimplemented and
+// rely on a real git binary or skip patch-applying tests.
+type stdinRunner interface {
+	RunStdin(ctx context.Context, dir string, stdin []byte, args ...string) ([]byte, error)
+}
+
 // Runner runs a `git` subcommand from a working directory and returns its
 // combined stdout. It is an interface so tests can stub git out.
 type Runner interface {
@@ -39,6 +47,12 @@ func NewExecRunner() ExecRunner { return ExecRunner{} }
 // success. A 30s default deadline guards against hangs when the caller did
 // not supply one.
 func (r ExecRunner) Run(ctx context.Context, dir string, args ...string) ([]byte, error) {
+	return r.RunStdin(ctx, dir, nil, args...)
+}
+
+// RunStdin is like Run but pipes stdin into the git process. Used by commands
+// like `git apply` that read a patch from stdin.
+func (r ExecRunner) RunStdin(ctx context.Context, dir string, stdin []byte, args ...string) ([]byte, error) {
 	bin := r.Bin
 	if bin == "" {
 		bin = "git"
@@ -51,6 +65,9 @@ func (r ExecRunner) Run(ctx context.Context, dir string, args ...string) ([]byte
 	cmd := exec.CommandContext(ctx, bin, args...)
 	if dir != "" {
 		cmd.Dir = dir
+	}
+	if stdin != nil {
+		cmd.Stdin = bytes.NewReader(stdin)
 	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -142,4 +159,82 @@ func DeleteBranch(ctx context.Context, r Runner, repoRoot, branch string, force 
 	}
 	_, err := r.Run(ctx, repoRoot, "branch", flag, branch)
 	return err
+}
+
+// DiffRange returns the patch produced by `git diff from...to` (three-dot:
+// changes on `to` since it diverged from `from`). Returns (nil, nil) when the
+// diff is empty so callers can treat "no changes" as a normal outcome.
+func DiffRange(ctx context.Context, r Runner, repoRoot, from, to string) ([]byte, error) {
+	if repoRoot == "" || from == "" || to == "" {
+		return nil, fmt.Errorf("git DiffRange: repoRoot, from, and to are required")
+	}
+	out, err := r.Run(ctx, repoRoot, "diff", from+"..."+to)
+	if err != nil {
+		return nil, err
+	}
+	if len(bytes.TrimSpace(out)) == 0 {
+		return nil, nil
+	}
+	return out, nil
+}
+
+// ApplyPatch applies a patch to repoRoot by piping it into `git apply`. A
+// dry-run via `--check` runs first so conflicts surface as a clear error
+// containing git's stderr (not silently leaving the working tree wedged).
+func ApplyPatch(ctx context.Context, r Runner, repoRoot string, patch []byte) error {
+	if len(bytes.TrimSpace(patch)) == 0 {
+		return fmt.Errorf("git ApplyPatch: empty patch")
+	}
+	sr, ok := r.(stdinRunner)
+	if !ok {
+		return fmt.Errorf("git ApplyPatch: runner does not support stdin")
+	}
+	if _, err := sr.RunStdin(ctx, repoRoot, patch, "apply", "--check"); err != nil {
+		return fmt.Errorf("patch does not apply cleanly: %w", err)
+	}
+	if _, err := sr.RunStdin(ctx, repoRoot, patch, "apply"); err != nil {
+		return fmt.Errorf("git apply: %w", err)
+	}
+	return nil
+}
+
+// ReversePatch reverses a previously-applied patch. New files added by the
+// original patch are deleted on reverse (git apply --reverse handles this).
+func ReversePatch(ctx context.Context, r Runner, repoRoot string, patch []byte) error {
+	if len(bytes.TrimSpace(patch)) == 0 {
+		return fmt.Errorf("git ReversePatch: empty patch")
+	}
+	sr, ok := r.(stdinRunner)
+	if !ok {
+		return fmt.Errorf("git ReversePatch: runner does not support stdin")
+	}
+	if _, err := sr.RunStdin(ctx, repoRoot, patch, "apply", "--reverse", "--check"); err != nil {
+		return fmt.Errorf("reverse patch does not apply cleanly: %w", err)
+	}
+	if _, err := sr.RunStdin(ctx, repoRoot, patch, "apply", "--reverse"); err != nil {
+		return fmt.Errorf("git apply --reverse: %w", err)
+	}
+	return nil
+}
+
+// CommitAll stages every change in repoRoot's working tree and creates a
+// commit with the given message. Returns nil (treating it as a no-op) when
+// there is nothing to commit so callers don't have to special-case clean
+// trees.
+func CommitAll(ctx context.Context, r Runner, repoRoot, message string) error {
+	if _, err := r.Run(ctx, repoRoot, "add", "-A"); err != nil {
+		return fmt.Errorf("git add: %w", err)
+	}
+	// Detect a clean tree via `diff --cached --quiet`: exit 0 = nothing staged.
+	out, err := r.Run(ctx, repoRoot, "status", "--porcelain")
+	if err != nil {
+		return fmt.Errorf("git status: %w", err)
+	}
+	if len(bytes.TrimSpace(out)) == 0 {
+		return nil
+	}
+	if _, err := r.Run(ctx, repoRoot, "commit", "-m", message); err != nil {
+		return fmt.Errorf("git commit: %w", err)
+	}
+	return nil
 }

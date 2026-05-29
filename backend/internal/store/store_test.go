@@ -20,7 +20,7 @@ func newTestStore(t *testing.T) *Store {
 func TestProjectCRUD(t *testing.T) {
 	s := newTestStore(t)
 
-	p, err := s.CreateProject("demo", "/tmp/demo")
+	p, err := s.CreateProject("demo", "/tmp/demo", "")
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -58,7 +58,7 @@ func TestGetMissingProject(t *testing.T) {
 
 func TestSessionLifecycle(t *testing.T) {
 	s := newTestStore(t)
-	p, _ := s.CreateProject("demo", "/tmp/demo")
+	p, _ := s.CreateProject("demo", "/tmp/demo", "")
 
 	sess, err := s.CreateSession(p.ID, "task", "claude-opus-4-7", models.ModeDefault, SessionInit{})
 	if err != nil {
@@ -88,7 +88,7 @@ func TestSessionLifecycle(t *testing.T) {
 
 func TestSessionModePersistence(t *testing.T) {
 	s := newTestStore(t)
-	p, _ := s.CreateProject("demo", "/tmp/demo")
+	p, _ := s.CreateProject("demo", "/tmp/demo", "")
 
 	sess, _ := s.CreateSession(p.ID, "task", "m", models.ModeAcceptEdits, SessionInit{})
 	if sess.PermissionMode != models.ModeAcceptEdits {
@@ -121,7 +121,7 @@ func TestCreateSessionUnknownProject(t *testing.T) {
 
 func TestMessagesAndUsage(t *testing.T) {
 	s := newTestStore(t)
-	p, _ := s.CreateProject("demo", "/tmp/demo")
+	p, _ := s.CreateProject("demo", "/tmp/demo", "")
 	sess, _ := s.CreateSession(p.ID, "task", "claude-opus-4-7", models.ModeDefault, SessionInit{})
 
 	if _, err := s.AddMessage(sess.ID, "user", "hello"); err != nil {
@@ -159,7 +159,7 @@ func TestMessagesAndUsage(t *testing.T) {
 
 func TestAttachments(t *testing.T) {
 	s := newTestStore(t)
-	p, _ := s.CreateProject("demo", "/tmp/demo")
+	p, _ := s.CreateProject("demo", "/tmp/demo", "")
 	sess, _ := s.CreateSession(p.ID, "task", "m", models.ModeDefault, SessionInit{})
 	msg, _ := s.AddMessage(sess.ID, "user", "see image-1")
 
@@ -197,7 +197,7 @@ func TestAttachments(t *testing.T) {
 
 func TestDeleteProjectCascades(t *testing.T) {
 	s := newTestStore(t)
-	p, _ := s.CreateProject("demo", "/tmp/demo")
+	p, _ := s.CreateProject("demo", "/tmp/demo", "")
 	sess, _ := s.CreateSession(p.ID, "task", "m", models.ModeDefault, SessionInit{})
 
 	if err := s.DeleteProject(p.ID); err != nil {
@@ -210,7 +210,7 @@ func TestDeleteProjectCascades(t *testing.T) {
 
 func TestSessionWorktreeFieldsPersist(t *testing.T) {
 	s := newTestStore(t)
-	p, _ := s.CreateProject("demo", "/tmp/demo")
+	p, _ := s.CreateProject("demo", "/tmp/demo", "")
 
 	init := SessionInit{
 		ID:           "sess-123",
@@ -248,7 +248,7 @@ func TestSessionWorktreeFieldsPersist(t *testing.T) {
 
 func TestDeleteSession(t *testing.T) {
 	s := newTestStore(t)
-	p, _ := s.CreateProject("demo", "/tmp/demo")
+	p, _ := s.CreateProject("demo", "/tmp/demo", "")
 	sess, _ := s.CreateSession(p.ID, "t", "m", models.ModeDefault, SessionInit{})
 
 	if err := s.DeleteSession(sess.ID); err != nil {

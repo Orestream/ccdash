@@ -2,6 +2,7 @@ CREATE TABLE IF NOT EXISTS projects (
     id         TEXT PRIMARY KEY,
     name       TEXT NOT NULL,
     path       TEXT NOT NULL,
+    git_mode   TEXT NOT NULL DEFAULT 'worktree' CHECK (git_mode IN ('default', 'worktree')),
     created_at TEXT NOT NULL
 );
 
@@ -16,6 +17,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     worktree_path     TEXT NOT NULL DEFAULT '',
     branch            TEXT NOT NULL DEFAULT '',
     base_commit       TEXT NOT NULL DEFAULT '',
+    preview_patch     BLOB,
+    preview_state     TEXT NOT NULL DEFAULT '',
     created_at        TEXT NOT NULL,
     updated_at        TEXT NOT NULL
 );

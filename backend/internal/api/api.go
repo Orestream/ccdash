@@ -84,6 +84,7 @@ func (s *Server) Router() http.Handler {
 				r.Get("/", s.handleListProjects)
 				r.Post("/", s.handleCreateProject)
 				r.Get("/{id}", s.handleGetProject)
+				r.Patch("/{id}", s.handleUpdateProject)
 				r.Delete("/{id}", s.handleDeleteProject)
 				r.Get("/{id}/sessions", s.handleListProjectSessions)
 				r.Post("/{id}/sessions", s.handleCreateSession)
@@ -101,6 +102,9 @@ func (s *Server) Router() http.Handler {
 				r.Get("/{id}/permissions", s.handleListPermissions)
 				r.Post("/{id}/permissions/{requestId}", s.handleRespondPermission)
 				r.Get("/{id}/usage", s.handleSessionUsage)
+				r.Post("/{id}/preview", s.handlePreviewSession)
+				r.Delete("/{id}/preview", s.handleUnpreviewSession)
+				r.Post("/{id}/accept", s.handleAcceptSession)
 			})
 
 			r.Get("/attachments/{id}", s.handleGetAttachment)
@@ -169,8 +173,9 @@ func (s *Server) handleListProjects(w http.ResponseWriter, _ *http.Request) {
 
 func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Name string `json:"name"`
-		Path string `json:"path"`
+		Name    string         `json:"name"`
+		Path    string         `json:"path"`
+		GitMode models.GitMode `json:"gitMode"`
 	}
 	if !decode(w, r, &body) {
 		return
@@ -179,13 +184,42 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "name and path are required")
 		return
 	}
-	p, err := s.store.CreateProject(body.Name, body.Path)
+	if body.GitMode != "" && !models.ValidGitMode(body.GitMode) {
+		writeErr(w, http.StatusBadRequest, "invalid gitMode")
+		return
+	}
+	p, err := s.store.CreateProject(body.Name, body.Path, body.GitMode)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	s.hub.Broadcast("project.created", p)
 	writeJSON(w, http.StatusCreated, p)
+}
+
+func (s *Server) handleUpdateProject(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	var body struct {
+		GitMode models.GitMode `json:"gitMode"`
+	}
+	if !decode(w, r, &body) {
+		return
+	}
+	if !models.ValidGitMode(body.GitMode) {
+		writeErr(w, http.StatusBadRequest, "invalid gitMode")
+		return
+	}
+	if err := s.store.UpdateProjectGitMode(id, body.GitMode); err != nil {
+		writeErr(w, statusForErr(err), err.Error())
+		return
+	}
+	p, err := s.store.GetProject(id)
+	if err != nil {
+		writeErr(w, statusForErr(err), err.Error())
+		return
+	}
+	s.hub.Broadcast("project.updated", p)
+	writeJSON(w, http.StatusOK, p)
 }
 
 func (s *Server) handleGetProject(w http.ResponseWriter, r *http.Request) {
@@ -473,6 +507,54 @@ func (s *Server) handleRespondPermission(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// previewStatusForErr maps preview-flow sentinels to the right HTTP code:
+// already-applied / not-applied → 400; another preview applied → 409;
+// no changes → 400; not found → 404; everything else falls through to 500.
+func previewStatusForErr(err error) int {
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		return http.StatusNotFound
+	case errors.Is(err, session.ErrPreviewAlreadyApplied),
+		errors.Is(err, session.ErrPreviewNotApplied),
+		errors.Is(err, session.ErrNoChanges):
+		return http.StatusBadRequest
+	case errors.Is(err, session.ErrAnotherPreviewApplied):
+		return http.StatusConflict
+	default:
+		return http.StatusInternalServerError
+	}
+}
+
+func (s *Server) handlePreviewSession(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	sess, err := s.mgr.PreviewSession(id)
+	if err != nil {
+		writeErr(w, previewStatusForErr(err), err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"session": sess})
+}
+
+func (s *Server) handleUnpreviewSession(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	sess, err := s.mgr.UnpreviewSession(id)
+	if err != nil {
+		writeErr(w, previewStatusForErr(err), err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"session": sess})
+}
+
+func (s *Server) handleAcceptSession(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	sess, err := s.mgr.AcceptSession(id)
+	if err != nil {
+		writeErr(w, previewStatusForErr(err), err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"session": sess})
 }
 
 func (s *Server) handleSessionUsage(w http.ResponseWriter, r *http.Request) {

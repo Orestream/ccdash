@@ -61,11 +61,35 @@ func (m PermissionMode) CLIPermissionMode() string {
 	return string(m)
 }
 
+// GitMode controls whether new sessions for a project get their own git
+// worktree+branch or run directly in the project's main checkout.
+type GitMode string
+
+const (
+	// GitModeWorktree provisions a per-session worktree + ccdash/<id8> branch
+	// (the default; matches legacy behavior).
+	GitModeWorktree GitMode = "worktree"
+	// GitModeDefault skips worktree provisioning: claude runs in the project
+	// path and writes are committed there directly.
+	GitModeDefault GitMode = "default"
+)
+
+// ValidGitMode reports whether m is a known git mode.
+func ValidGitMode(m GitMode) bool {
+	switch m {
+	case GitModeWorktree, GitModeDefault:
+		return true
+	default:
+		return false
+	}
+}
+
 // Project is a working directory that sessions are launched against.
 type Project struct {
 	ID        string    `json:"id"`
 	Name      string    `json:"name"`
 	Path      string    `json:"path"`
+	GitMode   GitMode   `json:"gitMode"`
 	CreatedAt time.Time `json:"createdAt"`
 }
 
@@ -89,8 +113,13 @@ type Session struct {
 	WorktreePath    string         `json:"worktreePath"`
 	Branch          string         `json:"branch"`
 	BaseCommit      string         `json:"baseCommit"`
-	CreatedAt       time.Time      `json:"createdAt"`
-	UpdatedAt       time.Time      `json:"updatedAt"`
+	// PreviewState is empty when the session has no preview applied to the
+	// project's main checkout, or "applied" when the session's diff has been
+	// staged onto project.Path so the user can test it. The patch itself is a
+	// DB-only blob and is never returned in JSON.
+	PreviewState string    `json:"previewState"`
+	CreatedAt    time.Time `json:"createdAt"`
+	UpdatedAt    time.Time `json:"updatedAt"`
 }
 
 // PermissionRequest is a pending tool-permission decision surfaced to the UI.

@@ -158,3 +158,168 @@ func TestAddWorktreeMissingArgs(t *testing.T) {
 type nopRunner struct{}
 
 func (nopRunner) Run(context.Context, string, ...string) ([]byte, error) { return nil, nil }
+
+// commitFile writes content to path under repo, stages it, and commits it on
+// the named branch. Returns the resulting HEAD sha.
+func commitFile(t *testing.T, r Runner, repo, branch, relpath, content, message string) string {
+	t.Helper()
+	ctx := context.Background()
+	if branch != "" {
+		// Checkout the branch (creating it if necessary).
+		if _, err := r.Run(ctx, repo, "rev-parse", "--verify", branch); err == nil {
+			mustRun(t, r, repo, "checkout", branch)
+		} else {
+			mustRun(t, r, repo, "checkout", "-b", branch)
+		}
+	}
+	full := filepath.Join(repo, relpath)
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	mustRun(t, r, repo, "add", relpath)
+	mustRun(t, r, repo, "commit", "-m", message)
+	sha, err := HeadCommit(ctx, r, repo)
+	if err != nil {
+		t.Fatalf("head: %v", err)
+	}
+	return sha
+}
+
+func TestDiffRange(t *testing.T) {
+	repo, r := initRepo(t)
+	ctx := context.Background()
+
+	// Modify README on a feature branch.
+	commitFile(t, r, repo, "feature", "README.md", "hello\nfeature line\n", "edit on feature")
+
+	patch, err := DiffRange(ctx, r, repo, "main", "feature")
+	if err != nil {
+		t.Fatalf("DiffRange: %v", err)
+	}
+	if len(patch) == 0 {
+		t.Fatal("expected non-empty patch")
+	}
+	if !strings.Contains(string(patch), "feature line") {
+		t.Fatalf("patch missing added line: %s", patch)
+	}
+
+	// Empty diff: from == to.
+	mustRun(t, r, repo, "checkout", "main")
+	empty, err := DiffRange(ctx, r, repo, "main", "main")
+	if err != nil {
+		t.Fatalf("DiffRange empty: %v", err)
+	}
+	if empty != nil {
+		t.Fatalf("expected nil patch for empty diff, got %q", empty)
+	}
+}
+
+func TestApplyAndReversePatchModifiedFile(t *testing.T) {
+	repo, r := initRepo(t)
+	ctx := context.Background()
+
+	commitFile(t, r, repo, "feature", "README.md", "hello\nfeature line\n", "edit on feature")
+	patch, err := DiffRange(ctx, r, repo, "main", "feature")
+	if err != nil {
+		t.Fatalf("DiffRange: %v", err)
+	}
+	mustRun(t, r, repo, "checkout", "main")
+
+	if err := ApplyPatch(ctx, r, repo, patch); err != nil {
+		t.Fatalf("ApplyPatch: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(repo, "README.md"))
+	if err != nil {
+		t.Fatalf("read README: %v", err)
+	}
+	if !strings.Contains(string(got), "feature line") {
+		t.Fatalf("file not updated after apply: %s", got)
+	}
+
+	if err := ReversePatch(ctx, r, repo, patch); err != nil {
+		t.Fatalf("ReversePatch: %v", err)
+	}
+	got, _ = os.ReadFile(filepath.Join(repo, "README.md"))
+	if strings.Contains(string(got), "feature line") {
+		t.Fatalf("file still modified after reverse: %s", got)
+	}
+}
+
+func TestApplyAndReversePatchNewFile(t *testing.T) {
+	repo, r := initRepo(t)
+	ctx := context.Background()
+
+	commitFile(t, r, repo, "feature", "added.txt", "brand new\n", "add new file on feature")
+	patch, err := DiffRange(ctx, r, repo, "main", "feature")
+	if err != nil {
+		t.Fatalf("DiffRange: %v", err)
+	}
+	mustRun(t, r, repo, "checkout", "main")
+
+	added := filepath.Join(repo, "added.txt")
+	if _, err := os.Stat(added); !os.IsNotExist(err) {
+		t.Fatalf("expected added.txt missing on main, got err=%v", err)
+	}
+	if err := ApplyPatch(ctx, r, repo, patch); err != nil {
+		t.Fatalf("ApplyPatch: %v", err)
+	}
+	if _, err := os.Stat(added); err != nil {
+		t.Fatalf("expected added.txt present after apply, got %v", err)
+	}
+
+	if err := ReversePatch(ctx, r, repo, patch); err != nil {
+		t.Fatalf("ReversePatch: %v", err)
+	}
+	if _, err := os.Stat(added); !os.IsNotExist(err) {
+		t.Fatalf("expected added.txt removed after reverse, got %v", err)
+	}
+}
+
+func TestApplyPatchConflictErrors(t *testing.T) {
+	repo, r := initRepo(t)
+	ctx := context.Background()
+
+	commitFile(t, r, repo, "feature", "README.md", "hello\nfeature line\n", "edit on feature")
+	patch, err := DiffRange(ctx, r, repo, "main", "feature")
+	if err != nil {
+		t.Fatalf("DiffRange: %v", err)
+	}
+	mustRun(t, r, repo, "checkout", "main")
+	// Wedge main so the patch can't apply cleanly.
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("totally different content\n"), 0o644); err != nil {
+		t.Fatalf("wedge README: %v", err)
+	}
+	mustRun(t, r, repo, "add", "README.md")
+	mustRun(t, r, repo, "commit", "-m", "wedge main")
+
+	if err := ApplyPatch(ctx, r, repo, patch); err == nil {
+		t.Fatalf("expected conflict error")
+	}
+}
+
+func TestCommitAll(t *testing.T) {
+	repo, r := initRepo(t)
+	ctx := context.Background()
+
+	if err := os.WriteFile(filepath.Join(repo, "new.txt"), []byte("data\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := CommitAll(ctx, r, repo, "feat: add new"); err != nil {
+		t.Fatalf("CommitAll: %v", err)
+	}
+	out, err := r.Run(ctx, repo, "log", "-1", "--pretty=%s")
+	if err != nil {
+		t.Fatalf("log: %v", err)
+	}
+	if strings.TrimSpace(string(out)) != "feat: add new" {
+		t.Fatalf("unexpected commit subject: %q", out)
+	}
+
+	// Clean tree: no-op, no error.
+	if err := CommitAll(ctx, r, repo, "noop"); err != nil {
+		t.Fatalf("CommitAll on clean tree: %v", err)
+	}
+}

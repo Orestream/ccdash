@@ -12,6 +12,7 @@ import type {
   RespondPermissionInput,
   SendMessageInput,
   Session,
+  UpdateProjectInput,
   UsageRecord,
   UsageSummary,
   Utilization,
@@ -88,6 +89,13 @@ export function createProject(input: CreateProjectInput): Promise<Project> {
 
 export function getProject(id: string, signal?: AbortSignal): Promise<Project> {
   return request<Project>(`/projects/${encodeURIComponent(id)}`, { signal });
+}
+
+export function updateProject(id: string, input: UpdateProjectInput): Promise<Project> {
+  return request<Project>(`/projects/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    body: input,
+  });
 }
 
 export function deleteProject(id: string): Promise<void> {
@@ -183,6 +191,36 @@ export function renameSession(sessionId: string, title: string): Promise<Session
     method: 'PATCH',
     body: { title },
   });
+}
+
+// previewSession applies the session's worktree diff onto the project's main
+// checkout as uncommitted edits — convenient for running a dev server against
+// the session's changes. The server returns the updated session with
+// previewState='applied'.
+export function previewSession(sessionId: string): Promise<{ session: Session }> {
+  return request<{ session: Session }>(
+    `/sessions/${encodeURIComponent(sessionId)}/preview`,
+    { method: 'POST' },
+  );
+}
+
+// unpreviewSession reverts the preview applied by previewSession, leaving the
+// session untouched. previewState returns to '' on success.
+export function unpreviewSession(sessionId: string): Promise<{ session: Session }> {
+  return request<{ session: Session }>(
+    `/sessions/${encodeURIComponent(sessionId)}/preview`,
+    { method: 'DELETE' },
+  );
+}
+
+// acceptSession commits the previewed changes on the project's main checkout
+// and tears down the worktree. The returned session has worktreePath/branch
+// cleared and status='done'.
+export function acceptSession(sessionId: string): Promise<{ session: Session }> {
+  return request<{ session: Session }>(
+    `/sessions/${encodeURIComponent(sessionId)}/accept`,
+    { method: 'POST' },
+  );
 }
 
 // --- Permissions ---

@@ -15,6 +15,7 @@ import (
 
 	"github.com/robinmalmstrom/ccdash/backend/internal/api"
 	"github.com/robinmalmstrom/ccdash/backend/internal/claude"
+	"github.com/robinmalmstrom/ccdash/backend/internal/commit"
 	gitwt "github.com/robinmalmstrom/ccdash/backend/internal/git"
 	"github.com/robinmalmstrom/ccdash/backend/internal/session"
 	"github.com/robinmalmstrom/ccdash/backend/internal/store"
@@ -40,6 +41,7 @@ func main() {
 
 	hub := ws.NewHub()
 	mgr := session.NewWithGit(st, hub, claude.NewCLIRunner(claudeBin), gitwt.NewExecRunner(), worktreeRoot)
+	mgr.SetCommitGenerator(commit.ClaudeGenerator{Bin: claudeBin})
 	srv := api.NewServer(st, mgr, hub, utilization.NewFetcher(credPath), version)
 
 	httpServer := &http.Server{

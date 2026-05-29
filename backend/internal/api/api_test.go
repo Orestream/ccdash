@@ -365,6 +365,97 @@ func TestUsageLimitsError(t *testing.T) {
 	}
 }
 
+func TestCreateProjectWithGitMode(t *testing.T) {
+	h := newTestServer(t)
+
+	rec := do(t, h, http.MethodPost, "/api/projects", map[string]string{
+		"name": "demo", "path": "/tmp/demo", "gitMode": "default",
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var p models.Project
+	_ = json.Unmarshal(rec.Body.Bytes(), &p)
+	if p.GitMode != models.GitModeDefault {
+		t.Fatalf("expected default, got %q", p.GitMode)
+	}
+
+	// Default omitted → worktree.
+	rec = do(t, h, http.MethodPost, "/api/projects", map[string]string{"name": "x", "path": "/tmp/x"})
+	_ = json.Unmarshal(rec.Body.Bytes(), &p)
+	if p.GitMode != models.GitModeWorktree {
+		t.Fatalf("expected worktree default, got %q", p.GitMode)
+	}
+
+	// Invalid mode → 400.
+	rec = do(t, h, http.MethodPost, "/api/projects", map[string]string{"name": "y", "path": "/tmp/y", "gitMode": "bogus"})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for bad mode, got %d", rec.Code)
+	}
+}
+
+func TestUpdateProjectGitMode(t *testing.T) {
+	h := newTestServer(t)
+	rec := do(t, h, http.MethodPost, "/api/projects", map[string]string{"name": "demo", "path": "/tmp/demo"})
+	var p models.Project
+	_ = json.Unmarshal(rec.Body.Bytes(), &p)
+
+	rec = do(t, h, http.MethodPatch, "/api/projects/"+p.ID, map[string]string{"gitMode": "default"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("patch status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var updated models.Project
+	_ = json.Unmarshal(rec.Body.Bytes(), &updated)
+	if updated.GitMode != models.GitModeDefault {
+		t.Fatalf("expected default, got %q", updated.GitMode)
+	}
+
+	rec = do(t, h, http.MethodPatch, "/api/projects/"+p.ID, map[string]string{"gitMode": "nope"})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rec.Code)
+	}
+	rec = do(t, h, http.MethodPatch, "/api/projects/no-such", map[string]string{"gitMode": "worktree"})
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for missing project, got %d", rec.Code)
+	}
+}
+
+func TestPreviewEndpointsReturnExpectedStatuses(t *testing.T) {
+	// The session under the test server has no worktree (its project lives at
+	// /tmp/demo, which is not a real git repo, and the test manager uses
+	// session.New so no git runner is even wired). Verify error mapping is
+	// correct without needing real git state.
+	h := newTestServer(t)
+	sess := createSessionForTest(t, h, map[string]string{"title": "t"})
+
+	rec := do(t, h, http.MethodPost, "/api/sessions/"+sess.ID+"/preview", nil)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500 (worktree isolation disabled), got %d body=%s", rec.Code, rec.Body.String())
+	}
+	rec = do(t, h, http.MethodDelete, "/api/sessions/"+sess.ID+"/preview", nil)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 (not applied), got %d body=%s", rec.Code, rec.Body.String())
+	}
+	rec = do(t, h, http.MethodPost, "/api/sessions/"+sess.ID+"/accept", nil)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 (not applied), got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	// Unknown session id → 404 on all three.
+	rec = do(t, h, http.MethodPost, "/api/sessions/ghost/preview", nil)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", rec.Code)
+	}
+	rec = do(t, h, http.MethodDelete, "/api/sessions/ghost/preview", nil)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", rec.Code)
+	}
+	rec = do(t, h, http.MethodPost, "/api/sessions/ghost/accept", nil)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", rec.Code)
+	}
+}
+
 func TestSendMessageRequiresContent(t *testing.T) {
 	h := newTestServer(t)
 	rec := do(t, h, http.MethodPost, "/api/projects", map[string]string{"name": "demo", "path": "/tmp/demo"})

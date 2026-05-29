@@ -8,6 +8,7 @@ package session
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -18,11 +19,35 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/robinmalmstrom/ccdash/backend/internal/claude"
+	"github.com/robinmalmstrom/ccdash/backend/internal/commit"
 	gitwt "github.com/robinmalmstrom/ccdash/backend/internal/git"
 	"github.com/robinmalmstrom/ccdash/backend/internal/models"
 	"github.com/robinmalmstrom/ccdash/backend/internal/store"
 	"github.com/robinmalmstrom/ccdash/backend/internal/ws"
 )
+
+// Sentinel errors for the preview/accept flow. API handlers map these to
+// specific status codes (400/409) instead of a generic 500.
+var (
+	// ErrPreviewAlreadyApplied means PreviewSession was called for a session
+	// whose preview is already on disk.
+	ErrPreviewAlreadyApplied = errors.New("preview already applied")
+	// ErrPreviewNotApplied means Unpreview/Accept was called for a session
+	// whose preview is not currently applied.
+	ErrPreviewNotApplied = errors.New("preview not applied")
+	// ErrAnotherPreviewApplied means another session in the same project owns
+	// the currently applied preview; only one preview per project at a time.
+	ErrAnotherPreviewApplied = errors.New("another preview is applied for this project")
+	// ErrNoChanges means DiffRange returned an empty diff for the session's
+	// branch — nothing to preview.
+	ErrNoChanges = errors.New("no changes to preview")
+)
+
+// defaultBranch is the assumed mainline branch for DiffRange when computing a
+// session's preview. Projects without a `main` branch are unusual enough that
+// surfacing the git error to the user (rather than guessing) is the right
+// behavior.
+const defaultBranch = "main"
 
 // Manager runs prompts and tracks in-flight runs and pending approvals.
 type Manager struct {
@@ -30,13 +55,18 @@ type Manager struct {
 	hub    *ws.Hub
 	runner claude.Runner
 
-	git          gitwt.Runner // wrapper around the git CLI; nil disables worktree isolation
-	worktreeRoot string       // base dir for per-session worktrees (e.g. $XDG_STATE_HOME/ccdash/worktrees)
+	git          gitwt.Runner            // wrapper around the git CLI; nil disables worktree isolation
+	worktreeRoot string                  // base dir for per-session worktrees (e.g. $XDG_STATE_HOME/ccdash/worktrees)
+	commitGen    commit.MessageGenerator // commit-message generator for Accept; nil falls back to commit.FallbackMessage
 
 	mu   sync.Mutex
 	live map[string]*liveSession // sessionID -> live process
 	wg   sync.WaitGroup
 }
+
+// SetCommitGenerator overrides the commit-message generator used by
+// AcceptSession. Pass nil to fall back to commit.FallbackMessage.
+func (m *Manager) SetCommitGenerator(g commit.MessageGenerator) { m.commitGen = g }
 
 // liveSession holds the per-session live process and its mutable run state.
 type liveSession struct {
@@ -320,7 +350,7 @@ func (m *Manager) CreateSession(projectID, title, model string, mode models.Perm
 	init := store.SessionInit{ID: uuid.NewString()}
 	cleanup := func() {} // run on later failure to roll back worktree creation
 
-	if m.git != nil && m.worktreeRoot != "" {
+	if m.git != nil && m.worktreeRoot != "" && project.GitMode != models.GitModeDefault {
 		ctx := context.Background()
 		repoRoot, ok, repoErr := gitwt.IsRepo(ctx, m.git, project.Path)
 		if repoErr != nil {
@@ -694,6 +724,166 @@ func mergeAnswers(original json.RawMessage, answers map[string]string) json.RawM
 		return original
 	}
 	return out
+}
+
+// PreviewSession applies the worktree's diff (computed against the project's
+// default branch) onto the project's main checkout as uncommitted edits so the
+// user can rebuild and try the change live before deciding whether to keep it.
+// Errors:
+//   - ErrNotFound if the session does not exist;
+//   - "worktree isolation disabled" if the manager has no git runner;
+//   - "session has no worktree" for non-worktree sessions;
+//   - "preview already applied" if this session's preview is already on disk;
+//   - "another preview is applied for this project" (409) if a sibling
+//     session in the same project owns the active preview;
+//   - "no changes to preview" when the diff is empty;
+//   - the git error otherwise (likely conflicts).
+func (m *Manager) PreviewSession(id string) (*models.Session, error) {
+	sess, err := m.store.GetSession(id)
+	if err != nil {
+		return nil, err
+	}
+	if m.git == nil {
+		return nil, fmt.Errorf("worktree isolation disabled")
+	}
+	if sess.WorktreePath == "" || sess.Branch == "" {
+		return nil, fmt.Errorf("session has no worktree")
+	}
+	if sess.PreviewState == "applied" {
+		return nil, ErrPreviewAlreadyApplied
+	}
+
+	project, err := m.store.GetProject(sess.ProjectID)
+	if err != nil {
+		return nil, err
+	}
+
+	n, err := m.store.CountAppliedPreviews(sess.ProjectID)
+	if err != nil {
+		return nil, err
+	}
+	if n > 0 {
+		return nil, ErrAnotherPreviewApplied
+	}
+
+	ctx := context.Background()
+	patch, err := gitwt.DiffRange(ctx, m.git, project.Path, defaultBranch, sess.Branch)
+	if err != nil {
+		return nil, fmt.Errorf("diff worktree: %w", err)
+	}
+	if patch == nil {
+		return nil, ErrNoChanges
+	}
+	if err := gitwt.ApplyPatch(ctx, m.git, project.Path, patch); err != nil {
+		return nil, err
+	}
+	if err := m.store.SetSessionPreview(id, "applied", patch); err != nil {
+		// Best-effort rollback so the working tree doesn't diverge from our state.
+		_ = gitwt.ReversePatch(ctx, m.git, project.Path, patch)
+		return nil, err
+	}
+	updated, err := m.store.GetSession(id)
+	if err != nil {
+		return nil, err
+	}
+	m.hub.Broadcast("session.status", updated)
+	return &updated, nil
+}
+
+// UnpreviewSession reverses an applied preview: the stored patch is reverse-
+// applied to the project's main checkout and the preview fields are cleared.
+func (m *Manager) UnpreviewSession(id string) (*models.Session, error) {
+	sess, err := m.store.GetSession(id)
+	if err != nil {
+		return nil, err
+	}
+	if sess.PreviewState != "applied" {
+		return nil, ErrPreviewNotApplied
+	}
+	if m.git == nil {
+		return nil, fmt.Errorf("worktree isolation disabled")
+	}
+	project, err := m.store.GetProject(sess.ProjectID)
+	if err != nil {
+		return nil, err
+	}
+	patch, err := m.store.GetSessionPreview(id)
+	if err != nil {
+		return nil, err
+	}
+	if len(patch) == 0 {
+		return nil, fmt.Errorf("preview state inconsistent: no stored patch")
+	}
+	ctx := context.Background()
+	if err := gitwt.ReversePatch(ctx, m.git, project.Path, patch); err != nil {
+		return nil, err
+	}
+	if err := m.store.SetSessionPreview(id, "", nil); err != nil {
+		return nil, err
+	}
+	updated, err := m.store.GetSession(id)
+	if err != nil {
+		return nil, err
+	}
+	m.hub.Broadcast("session.status", updated)
+	return &updated, nil
+}
+
+// AcceptSession finalizes a previewed session: it generates a commit message
+// from the stored patch, commits the applied changes into the project's main
+// checkout, removes the session's worktree (and its branch), clears the
+// session's worktree/preview fields, and marks it done.
+func (m *Manager) AcceptSession(id string) (*models.Session, error) {
+	sess, err := m.store.GetSession(id)
+	if err != nil {
+		return nil, err
+	}
+	if sess.PreviewState != "applied" {
+		return nil, ErrPreviewNotApplied
+	}
+	if m.git == nil {
+		return nil, fmt.Errorf("worktree isolation disabled")
+	}
+	project, err := m.store.GetProject(sess.ProjectID)
+	if err != nil {
+		return nil, err
+	}
+	patch, err := m.store.GetSessionPreview(id)
+	if err != nil {
+		return nil, err
+	}
+
+	ctx := context.Background()
+	msg := commit.GenerateOrFallback(ctx, m.commitGen, patch)
+	if err := gitwt.CommitAll(ctx, m.git, project.Path, msg); err != nil {
+		return nil, err
+	}
+
+	if sess.WorktreePath != "" {
+		if repoRoot, ok, _ := gitwt.IsRepo(ctx, m.git, project.Path); ok {
+			_ = gitwt.RemoveWorktree(ctx, m.git, repoRoot, sess.WorktreePath, true)
+			if sess.Branch != "" {
+				_ = gitwt.DeleteBranch(ctx, m.git, repoRoot, sess.Branch, true)
+			}
+		}
+	}
+
+	if err := m.store.SetSessionPreview(id, "", nil); err != nil {
+		return nil, err
+	}
+	if err := m.store.ClearSessionWorktree(id); err != nil {
+		return nil, err
+	}
+	if err := m.store.UpdateSessionStatus(id, models.StatusDone); err != nil {
+		return nil, err
+	}
+
+	updated, err := m.store.GetSession(id)
+	if err != nil {
+		return nil, err
+	}
+	m.hub.Broadcast("session.status", updated)
+	return &updated, nil
 }
 
 // titleFromMessage derives a session title from a user message: its first

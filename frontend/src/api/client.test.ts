@@ -42,6 +42,7 @@ describe('api client', () => {
         id: 'p1',
         name: 'My App',
         path: '/code/app',
+        gitMode: 'worktree',
         createdAt: '2026-05-25T12:00:00Z',
       },
     ];
@@ -61,17 +62,26 @@ describe('api client', () => {
       id: 'p2',
       name: 'New',
       path: '/code/new',
+      gitMode: 'worktree',
       createdAt: '2026-05-25T12:00:00Z',
     };
     fetchMock.mockResolvedValueOnce(jsonResponse(created, { status: 201 }));
 
-    const result = await createProject({ name: 'New', path: '/code/new' });
+    const result = await createProject({
+      name: 'New',
+      path: '/code/new',
+      gitMode: 'worktree',
+    });
 
     const [url, opts] = fetchMock.mock.calls[0];
     expect(url).toBe('/api/projects');
     expect(opts.method).toBe('POST');
     expect(opts.headers).toMatchObject({ 'Content-Type': 'application/json' });
-    expect(JSON.parse(opts.body)).toEqual({ name: 'New', path: '/code/new' });
+    expect(JSON.parse(opts.body)).toEqual({
+      name: 'New',
+      path: '/code/new',
+      gitMode: 'worktree',
+    });
     expect(result).toEqual(created);
   });
 

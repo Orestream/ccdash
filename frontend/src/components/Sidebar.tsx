@@ -5,9 +5,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
 import { ApiError, createProject, createSession, listProjects } from '../api/client';
-import type { Project, Session } from '../types';
+import type { Project, ProjectGitMode, Session } from '../types';
 import { useSessions } from '../hooks/useSessions';
 import { useWebSocket } from '../hooks/useWebSocket';
+import { GitModeSelector } from './GitModeSelector';
 
 const RECENT_SESSION_LIMIT = 3;
 
@@ -17,6 +18,7 @@ export function Sidebar() {
   const [loading, setLoading] = useState(true);
   const [name, setName] = useState('');
   const [path, setPath] = useState('');
+  const [gitMode, setGitMode] = useState<ProjectGitMode>('worktree');
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [addingTo, setAddingTo] = useState<string | null>(null);
@@ -95,12 +97,17 @@ export function Sidebar() {
     setSubmitting(true);
     setFormError(null);
     try {
-      const created = await createProject({ name: name.trim(), path: path.trim() });
+      const created = await createProject({
+        name: name.trim(),
+        path: path.trim(),
+        gitMode,
+      });
       setProjects((prev) =>
         prev.some((p) => p.id === created.id) ? prev : [created, ...prev],
       );
       setName('');
       setPath('');
+      setGitMode('worktree');
     } catch (err) {
       const msg =
         err instanceof ApiError || err instanceof Error
@@ -199,6 +206,7 @@ export function Sidebar() {
           value={path}
           onChange={(e) => setPath(e.target.value)}
         />
+        <GitModeSelector mode={gitMode} onChange={setGitMode} disabled={submitting} />
         {formError && (
           <p className="error" role="alert">
             {formError}

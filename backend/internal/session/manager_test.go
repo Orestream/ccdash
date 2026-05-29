@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/robinmalmstrom/ccdash/backend/internal/claude"
+	"github.com/robinmalmstrom/ccdash/backend/internal/commit"
 	gitwt "github.com/robinmalmstrom/ccdash/backend/internal/git"
 	"github.com/robinmalmstrom/ccdash/backend/internal/models"
 	"github.com/robinmalmstrom/ccdash/backend/internal/store"
@@ -97,7 +98,7 @@ func setup(t *testing.T, runner claude.Runner) (*Manager, *store.Store, models.S
 		t.Fatalf("open store: %v", err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	p, _ := st.CreateProject("demo", "/tmp/demo")
+	p, _ := st.CreateProject("demo", "/tmp/demo", "")
 	sess, _ := st.CreateSession(p.ID, "task", "claude-opus-4-7", models.ModeDefault, store.SessionInit{})
 	return New(st, ws.NewHub(), runner), st, sess
 }
@@ -589,7 +590,7 @@ func setupWithGit(t *testing.T) (*Manager, *store.Store, models.Project, string)
 
 	worktreeRoot := t.TempDir()
 	mgr := NewWithGit(st, ws.NewHub(), &fakeRunner{sess: newFakeSession()}, gitwt.NewExecRunner(), worktreeRoot)
-	p, _ := st.CreateProject("demo", repo)
+	p, _ := st.CreateProject("demo", repo, "")
 	return mgr, st, p, worktreeRoot
 }
 
@@ -628,7 +629,7 @@ func TestCreateSessionNonGitProjectKeepsLegacyBehavior(t *testing.T) {
 
 	plainDir := t.TempDir() // not a git repo
 	mgr := NewWithGit(st, ws.NewHub(), &fakeRunner{sess: newFakeSession()}, gitwt.NewExecRunner(), t.TempDir())
-	p, _ := st.CreateProject("plain", plainDir)
+	p, _ := st.CreateProject("plain", plainDir, "")
 
 	sess, err := mgr.CreateSession(p.ID, "task", "m", models.ModeDefault)
 	if err != nil {
@@ -724,5 +725,169 @@ func TestDeleteProjectCleansUpWorktrees(t *testing.T) {
 	}
 	if _, err := st.GetProject(p.ID); err != store.ErrNotFound {
 		t.Fatalf("expected project deleted, got %v", err)
+	}
+}
+
+// editWorktreeAndCommit edits a file in the worktree on its branch and commits
+// the change. Returns the new branch HEAD.
+func editWorktreeAndCommit(t *testing.T, worktree, relpath, content, message string) {
+	t.Helper()
+	r := gitwt.NewExecRunner()
+	ctx := context.Background()
+	full := filepath.Join(worktree, relpath)
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	mustRunGit(t, r, worktree, "config", "user.email", "test@example.com")
+	mustRunGit(t, r, worktree, "config", "user.name", "ccdash test")
+	mustRunGit(t, r, worktree, "add", relpath)
+	if _, err := r.Run(ctx, worktree, "commit", "-m", message); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+}
+
+func TestCreateSessionGitModeDefaultSkipsWorktree(t *testing.T) {
+	repo := gitInitRepo(t)
+	st, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	worktreeRoot := t.TempDir()
+	mgr := NewWithGit(st, ws.NewHub(), &fakeRunner{sess: newFakeSession()}, gitwt.NewExecRunner(), worktreeRoot)
+
+	p, _ := st.CreateProject("demo", repo, models.GitModeDefault)
+	sess, err := mgr.CreateSession(p.ID, "task", "m", models.ModeDefault)
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if sess.WorktreePath != "" || sess.Branch != "" || sess.BaseCommit != "" {
+		t.Fatalf("expected empty worktree fields for gitMode=default, got %+v", sess)
+	}
+}
+
+func TestPreviewAcceptFlow(t *testing.T) {
+	mgr, _, p, _ := setupWithGit(t)
+	mgr.SetCommitGenerator(commit.FakeGenerator{Msg: "feat: from session"})
+
+	sess, err := mgr.CreateSession(p.ID, "task", "m", models.ModeDefault)
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	// Simulate claude making a change on the worktree's branch.
+	editWorktreeAndCommit(t, sess.WorktreePath, "feature.txt", "from session\n", "feat: add feature")
+
+	// Preview: file should appear in project.Path.
+	previewed, err := mgr.PreviewSession(sess.ID)
+	if err != nil {
+		t.Fatalf("PreviewSession: %v", err)
+	}
+	if previewed.PreviewState != "applied" {
+		t.Fatalf("expected applied, got %q", previewed.PreviewState)
+	}
+	if _, err := os.Stat(filepath.Join(p.Path, "feature.txt")); err != nil {
+		t.Fatalf("feature.txt missing in project after preview: %v", err)
+	}
+
+	// Trying again is rejected.
+	if _, err := mgr.PreviewSession(sess.ID); !errors.Is(err, ErrPreviewAlreadyApplied) {
+		t.Fatalf("expected ErrPreviewAlreadyApplied, got %v", err)
+	}
+
+	// Another session in the same project can't preview while this one is applied.
+	sess2, err := mgr.CreateSession(p.ID, "task2", "m", models.ModeDefault)
+	if err != nil {
+		t.Fatalf("create sess2: %v", err)
+	}
+	editWorktreeAndCommit(t, sess2.WorktreePath, "other.txt", "other\n", "feat: other")
+	if _, err := mgr.PreviewSession(sess2.ID); !errors.Is(err, ErrAnotherPreviewApplied) {
+		t.Fatalf("expected ErrAnotherPreviewApplied, got %v", err)
+	}
+
+	// Accept: commits onto project.Path, removes worktree, clears fields, marks done.
+	accepted, err := mgr.AcceptSession(sess.ID)
+	if err != nil {
+		t.Fatalf("AcceptSession: %v", err)
+	}
+	if accepted.Status != models.StatusDone {
+		t.Fatalf("expected done, got %s", accepted.Status)
+	}
+	if accepted.WorktreePath != "" || accepted.Branch != "" || accepted.PreviewState != "" {
+		t.Fatalf("expected cleared fields, got %+v", accepted)
+	}
+	if _, err := os.Stat(sess.WorktreePath); !os.IsNotExist(err) {
+		t.Fatalf("worktree should be gone, got err=%v", err)
+	}
+	// Most-recent commit subject should be the generator output.
+	r := gitwt.NewExecRunner()
+	out, err := r.Run(context.Background(), p.Path, "log", "-1", "--pretty=%s")
+	if err != nil {
+		t.Fatalf("git log: %v", err)
+	}
+	if strings.TrimSpace(string(out)) != "feat: from session" {
+		t.Fatalf("unexpected commit subject: %q", out)
+	}
+}
+
+func TestPreviewCancelRevertsChange(t *testing.T) {
+	mgr, _, p, _ := setupWithGit(t)
+	sess, err := mgr.CreateSession(p.ID, "task", "m", models.ModeDefault)
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	editWorktreeAndCommit(t, sess.WorktreePath, "added.txt", "x\n", "feat: add")
+
+	if _, err := mgr.PreviewSession(sess.ID); err != nil {
+		t.Fatalf("PreviewSession: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(p.Path, "added.txt")); err != nil {
+		t.Fatalf("added.txt missing after preview: %v", err)
+	}
+
+	cancelled, err := mgr.UnpreviewSession(sess.ID)
+	if err != nil {
+		t.Fatalf("UnpreviewSession: %v", err)
+	}
+	if cancelled.PreviewState != "" {
+		t.Fatalf("expected cleared previewState, got %q", cancelled.PreviewState)
+	}
+	if _, err := os.Stat(filepath.Join(p.Path, "added.txt")); !os.IsNotExist(err) {
+		t.Fatalf("added.txt should be gone after cancel, got err=%v", err)
+	}
+
+	// Cancelling again is a 400-shaped error.
+	if _, err := mgr.UnpreviewSession(sess.ID); !errors.Is(err, ErrPreviewNotApplied) {
+		t.Fatalf("expected ErrPreviewNotApplied, got %v", err)
+	}
+}
+
+func TestPreviewNoChangesIsRejected(t *testing.T) {
+	mgr, _, p, _ := setupWithGit(t)
+	sess, err := mgr.CreateSession(p.ID, "task", "m", models.ModeDefault)
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := mgr.PreviewSession(sess.ID); !errors.Is(err, ErrNoChanges) {
+		t.Fatalf("expected ErrNoChanges, got %v", err)
+	}
+}
+
+func TestPreviewRequiresWorktreeSession(t *testing.T) {
+	st, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	mgr := NewWithGit(st, ws.NewHub(), &fakeRunner{sess: newFakeSession()}, gitwt.NewExecRunner(), t.TempDir())
+	p, _ := st.CreateProject("plain", t.TempDir(), "") // not a git repo: no worktree
+	sess, err := mgr.CreateSession(p.ID, "task", "m", models.ModeDefault)
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := mgr.PreviewSession(sess.ID); err == nil {
+		t.Fatalf("expected error for non-worktree session")
 	}
 }

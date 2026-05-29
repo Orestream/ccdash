@@ -1,10 +1,13 @@
 // TypeScript types mirroring docs/API.md — the frozen API contract.
 // All field names are camelCase; timestamps are RFC 3339 strings; IDs are UUID v4 strings.
 
+export type ProjectGitMode = 'default' | 'worktree';
+
 export interface Project {
   id: string;
   name: string;
   path: string;
+  gitMode: ProjectGitMode;
   createdAt: string;
 }
 
@@ -33,6 +36,10 @@ export interface Session {
   worktreePath: string;
   branch: string;
   baseCommit: string;
+  // previewState is "applied" while the session's diff is mirrored onto the
+  // project's main checkout via POST /api/sessions/{id}/preview; empty
+  // otherwise. Only meaningful for sessions that have a worktree.
+  previewState: '' | 'applied';
   createdAt: string;
   updatedAt: string;
 }
@@ -164,6 +171,13 @@ export type WsEvent =
 export interface CreateProjectInput {
   name: string;
   path: string;
+  gitMode?: ProjectGitMode;
+}
+
+export interface UpdateProjectInput {
+  name?: string;
+  path?: string;
+  gitMode?: ProjectGitMode;
 }
 
 export interface CreateSessionInput {

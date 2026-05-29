@@ -859,3 +859,110 @@ a {
   margin: 0.4rem 0 0;
   font-size: 0.75rem;
 }
+
+/* Confirm dialog */
+.confirm-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgb(0 0 0 / 55%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+  z-index: 100;
+}
+.confirm-dialog {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1.2rem 1.3rem;
+  max-width: 28rem;
+  width: 100%;
+  box-shadow: 0 12px 40px rgb(0 0 0 / 45%);
+}
+.confirm-title {
+  margin: 0 0 0.6rem;
+  font-size: 1rem;
+}
+.confirm-body {
+  color: var(--text-muted);
+  margin-bottom: 1rem;
+  line-height: 1.45;
+}
+.confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+.confirm-actions .primary {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+
+/* Preview action buttons in the SessionView header */
+.preview-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 0.2rem;
+  margin-left: 0.4rem;
+}
+.preview-actions button {
+  font-size: 0.72rem;
+  padding: 0.2rem 0.55rem;
+}
+.preview-error {
+  font-size: 0.72rem;
+  color: var(--danger, #f87171);
+}
+
+/* Git-mode selector reuses the segmented look from .mode-selector. */
+.git-mode-selector {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.git-mode-option {
+  border: none;
+  border-radius: 0;
+  background: var(--bg-elev);
+  color: var(--text-muted);
+  padding: 0.35rem 0.65rem;
+  font-size: 0.75rem;
+  border-right: 1px solid var(--border);
+}
+.git-mode-option:last-child {
+  border-right: none;
+}
+.git-mode-option:hover:not(:disabled):not(.active) {
+  background: var(--bg-elev-2);
+  color: var(--text);
+}
+.git-mode-option.active {
+  background: var(--accent-dim);
+  color: #fff;
+  font-weight: 600;
+}
+.git-mode-hint {
+  display: block;
+  margin-top: 0.3rem;
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  line-height: 1.35;
+}
+
+/* Project-header inline form for editing git-mode etc. */
+.project-settings {
+  margin-top: 0.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+.project-settings-label {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}

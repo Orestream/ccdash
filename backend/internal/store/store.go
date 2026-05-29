@@ -60,6 +60,11 @@ func migrate(db *sql.DB) error {
 		`ALTER TABLE sessions ADD COLUMN worktree_path TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE sessions ADD COLUMN branch TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE sessions ADD COLUMN base_commit TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE sessions ADD COLUMN preview_patch BLOB`,
+		`ALTER TABLE sessions ADD COLUMN preview_state TEXT NOT NULL DEFAULT ''`,
+		// CHECK on the new column is dropped here: SQLite cannot add a CHECK via
+		// ALTER, but the schema embed enforces it for fresh databases.
+		`ALTER TABLE projects ADD COLUMN git_mode TEXT NOT NULL DEFAULT 'worktree'`,
 	}
 	for _, stmt := range alters {
 		if _, err := db.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
@@ -83,17 +88,22 @@ func parseTime(v string) time.Time {
 
 // --- Projects ---
 
-// CreateProject inserts a new project and returns it.
-func (s *Store) CreateProject(name, path string) (models.Project, error) {
+// CreateProject inserts a new project and returns it. An empty gitMode defaults
+// to GitModeWorktree.
+func (s *Store) CreateProject(name, path string, gitMode models.GitMode) (models.Project, error) {
+	if gitMode == "" {
+		gitMode = models.GitModeWorktree
+	}
 	p := models.Project{
 		ID:        uuid.NewString(),
 		Name:      name,
 		Path:      path,
+		GitMode:   gitMode,
 		CreatedAt: time.Now().UTC(),
 	}
 	_, err := s.db.Exec(
-		`INSERT INTO projects (id, name, path, created_at) VALUES (?, ?, ?, ?)`,
-		p.ID, p.Name, p.Path, p.CreatedAt.Format(time.RFC3339Nano),
+		`INSERT INTO projects (id, name, path, git_mode, created_at) VALUES (?, ?, ?, ?, ?)`,
+		p.ID, p.Name, p.Path, p.GitMode, p.CreatedAt.Format(time.RFC3339Nano),
 	)
 	if err != nil {
 		return models.Project{}, fmt.Errorf("insert project: %w", err)
@@ -103,7 +113,7 @@ func (s *Store) CreateProject(name, path string) (models.Project, error) {
 
 // ListProjects returns all projects, newest first.
 func (s *Store) ListProjects() ([]models.Project, error) {
-	rows, err := s.db.Query(`SELECT id, name, path, created_at FROM projects ORDER BY created_at DESC`)
+	rows, err := s.db.Query(`SELECT id, name, path, git_mode, created_at FROM projects ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("query projects: %w", err)
 	}
@@ -113,7 +123,7 @@ func (s *Store) ListProjects() ([]models.Project, error) {
 	for rows.Next() {
 		var p models.Project
 		var created string
-		if err := rows.Scan(&p.ID, &p.Name, &p.Path, &created); err != nil {
+		if err := rows.Scan(&p.ID, &p.Name, &p.Path, &p.GitMode, &created); err != nil {
 			return nil, fmt.Errorf("scan project: %w", err)
 		}
 		p.CreatedAt = parseTime(created)
@@ -127,8 +137,8 @@ func (s *Store) GetProject(id string) (models.Project, error) {
 	var p models.Project
 	var created string
 	err := s.db.QueryRow(
-		`SELECT id, name, path, created_at FROM projects WHERE id = ?`, id,
-	).Scan(&p.ID, &p.Name, &p.Path, &created)
+		`SELECT id, name, path, git_mode, created_at FROM projects WHERE id = ?`, id,
+	).Scan(&p.ID, &p.Name, &p.Path, &p.GitMode, &created)
 	if errors.Is(err, sql.ErrNoRows) {
 		return models.Project{}, ErrNotFound
 	}
@@ -137,6 +147,22 @@ func (s *Store) GetProject(id string) (models.Project, error) {
 	}
 	p.CreatedAt = parseTime(created)
 	return p, nil
+}
+
+// UpdateProjectGitMode changes a project's gitMode setting.
+func (s *Store) UpdateProjectGitMode(id string, mode models.GitMode) error {
+	if !models.ValidGitMode(mode) {
+		return fmt.Errorf("invalid git mode: %q", mode)
+	}
+	res, err := s.db.Exec(`UPDATE projects SET git_mode = ? WHERE id = ?`, mode, id)
+	if err != nil {
+		return fmt.Errorf("update project git mode: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 // DeleteProject removes a project (cascading to its sessions).
@@ -208,23 +234,25 @@ func (s *Store) CreateSession(projectID, title, model string, mode models.Permis
 
 func scanSession(scanner interface{ Scan(...any) error }) (models.Session, error) {
 	var sess models.Session
-	var status, mode, created, updated string
+	var status, mode, previewState, created, updated string
 	if err := scanner.Scan(
 		&sess.ID, &sess.ProjectID, &sess.ClaudeSessionID, &sess.Title,
 		&status, &sess.Model, &mode,
 		&sess.WorktreePath, &sess.Branch, &sess.BaseCommit,
+		&previewState,
 		&created, &updated,
 	); err != nil {
 		return models.Session{}, err
 	}
 	sess.Status = models.SessionStatus(status)
 	sess.PermissionMode = models.PermissionMode(mode)
+	sess.PreviewState = previewState
 	sess.CreatedAt = parseTime(created)
 	sess.UpdatedAt = parseTime(updated)
 	return sess, nil
 }
 
-const sessionCols = `id, project_id, claude_session_id, title, status, model, permission_mode, worktree_path, branch, base_commit, created_at, updated_at`
+const sessionCols = `id, project_id, claude_session_id, title, status, model, permission_mode, worktree_path, branch, base_commit, preview_state, created_at, updated_at`
 
 // ListSessions returns all sessions, newest first.
 func (s *Store) ListSessions() ([]models.Session, error) {
@@ -327,6 +355,70 @@ func (s *Store) DeleteSession(id string) error {
 	res, err := s.db.Exec(`DELETE FROM sessions WHERE id = ?`, id)
 	if err != nil {
 		return fmt.Errorf("delete session: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// SetSessionPreview persists an applied preview patch alongside its state.
+// state must be 'applied' to record a patch, or ” to clear it (patch should
+// be nil when clearing).
+func (s *Store) SetSessionPreview(id, state string, patch []byte) error {
+	res, err := s.db.Exec(
+		`UPDATE sessions SET preview_state = ?, preview_patch = ?, updated_at = ? WHERE id = ?`,
+		state, patch, nowStr(), id,
+	)
+	if err != nil {
+		return fmt.Errorf("update session preview: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// GetSessionPreview returns the stored preview patch for a session (nil if
+// none is applied).
+func (s *Store) GetSessionPreview(id string) ([]byte, error) {
+	var patch []byte
+	err := s.db.QueryRow(`SELECT preview_patch FROM sessions WHERE id = ?`, id).Scan(&patch)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get session preview: %w", err)
+	}
+	return patch, nil
+}
+
+// CountAppliedPreviews returns the number of sessions in the given project
+// whose preview is currently applied. Used to enforce a single live preview
+// per project.
+func (s *Store) CountAppliedPreviews(projectID string) (int, error) {
+	var n int
+	if err := s.db.QueryRow(
+		`SELECT COUNT(*) FROM sessions WHERE project_id = ? AND preview_state = 'applied'`,
+		projectID,
+	).Scan(&n); err != nil {
+		return 0, fmt.Errorf("count applied previews: %w", err)
+	}
+	return n, nil
+}
+
+// ClearSessionWorktree zeroes a session's worktree/branch/base_commit fields.
+// Used after Accept finalizes the worktree's diff into the project's main
+// checkout and the worktree itself has been removed.
+func (s *Store) ClearSessionWorktree(id string) error {
+	res, err := s.db.Exec(
+		`UPDATE sessions SET worktree_path = '', branch = '', base_commit = '', updated_at = ? WHERE id = ?`,
+		nowStr(), id,
+	)
+	if err != nil {
+		return fmt.Errorf("clear session worktree: %w", err)
 	}
 	n, _ := res.RowsAffected()
 	if n == 0 {
