@@ -16,10 +16,15 @@ const projects: Project[] = [
   },
 ];
 
-function makeSession(id: string, title: string, updatedAt: string): Session {
+function makeSession(
+  id: string,
+  title: string,
+  updatedAt: string,
+  projectId = 'p1',
+): Session {
   return {
     id,
-    projectId: 'p1',
+    projectId,
     claudeSessionId: '',
     title,
     status: 'idle',
@@ -95,6 +100,53 @@ describe('Sidebar', () => {
       .map((l) => l.textContent);
     expect(labels).toEqual(['newest', 'middle', 'oldest']);
     expect(screen.queryByText('ancient')).toBeNull();
+  });
+
+  it('sorts projects by most recent session activity', async () => {
+    const multi: Project[] = [
+      {
+        id: 'p1',
+        name: 'alpha',
+        path: '/tmp/a',
+        gitMode: 'worktree',
+        createdAt: '2026-05-25T08:00:00Z',
+      },
+      {
+        id: 'p2',
+        name: 'beta',
+        path: '/tmp/b',
+        gitMode: 'worktree',
+        createdAt: '2026-05-25T09:00:00Z',
+      },
+      {
+        id: 'p3',
+        name: 'gamma',
+        path: '/tmp/c',
+        gitMode: 'worktree',
+        createdAt: '2026-05-25T10:00:00Z',
+      },
+    ];
+    vi.spyOn(client, 'listProjects').mockResolvedValue(multi);
+    vi.spyOn(client, 'listSessions').mockResolvedValue([
+      // alpha's newest session was 5 minutes ago — most recent activity.
+      makeSession('s1', 'a-recent', '2026-05-25T13:00:00Z', 'p1'),
+      // beta's newest session was an hour ago.
+      makeSession('s2', 'b-older', '2026-05-25T12:00:00Z', 'p2'),
+      // gamma has no sessions, so it sorts by its createdAt (oldest of the three).
+    ]);
+
+    render(
+      <MemoryRouter>
+        <Sidebar />
+      </MemoryRouter>,
+    );
+
+    await screen.findByRole('link', { name: 'alpha' });
+    const names = screen
+      .getAllByRole('link')
+      .map((l) => l.textContent)
+      .filter((t) => t === 'alpha' || t === 'beta' || t === 'gamma');
+    expect(names).toEqual(['alpha', 'beta', 'gamma']);
   });
 
   it('new-project form defaults to worktree git-mode and submits it', async () => {

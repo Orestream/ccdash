@@ -76,6 +76,16 @@ export function Sidebar() {
     return map;
   }, [sessions]);
 
+  // Projects sorted by most-recent session activity; projects with no sessions
+  // fall back to their createdAt so they sort below any project that has run.
+  const sortedProjects = useMemo(() => {
+    const lastActivity = (p: Project) => {
+      const recent = recentByProject.get(p.id);
+      return recent && recent.length > 0 ? recent[0].updatedAt : p.createdAt;
+    };
+    return [...projects].sort((a, b) => lastActivity(b).localeCompare(lastActivity(a)));
+  }, [projects, recentByProject]);
+
   const handleQuickAdd = async (projectId: string) => {
     if (addingTo) return;
     setAddingTo(projectId);
@@ -139,7 +149,7 @@ export function Sidebar() {
           <p className="muted">No projects yet.</p>
         )}
         <ul>
-          {projects.map((p) => {
+          {sortedProjects.map((p) => {
             const recent = recentByProject.get(p.id) ?? [];
             return (
               <li key={p.id} className="project-item">
