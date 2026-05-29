@@ -8,6 +8,9 @@ export interface GitModeSelectorProps {
   mode: ProjectGitMode;
   onChange: (mode: ProjectGitMode) => void;
   disabled?: boolean;
+  // When false, the per-mode hint line is omitted (callers can use the active
+  // hint as a tooltip instead). Defaults to true for the project-page form.
+  showHint?: boolean;
 }
 
 const MODES: Array<{ value: ProjectGitMode; label: string; hint: string }> = [
@@ -23,7 +26,12 @@ const MODES: Array<{ value: ProjectGitMode; label: string; hint: string }> = [
   },
 ];
 
-export function GitModeSelector({ mode, onChange, disabled }: GitModeSelectorProps) {
+export function GitModeSelector({
+  mode,
+  onChange,
+  disabled,
+  showHint = true,
+}: GitModeSelectorProps) {
   const activeHint = MODES.find((m) => m.value === mode)?.hint ?? '';
   return (
     <>
@@ -31,6 +39,7 @@ export function GitModeSelector({ mode, onChange, disabled }: GitModeSelectorPro
         className="git-mode-selector"
         role="radiogroup"
         aria-label="Git mode"
+        title={showHint ? undefined : activeHint}
       >
         {MODES.map((m) => {
           const active = m.value === mode;
@@ -43,6 +52,7 @@ export function GitModeSelector({ mode, onChange, disabled }: GitModeSelectorPro
               disabled={disabled}
               className={`git-mode-option${active ? ' active' : ''}`}
               data-git-mode={m.value}
+              title={m.hint}
               onClick={() => {
                 if (!active) onChange(m.value);
               }}
@@ -52,7 +62,7 @@ export function GitModeSelector({ mode, onChange, disabled }: GitModeSelectorPro
           );
         })}
       </div>
-      <span className="git-mode-hint">{activeHint}</span>
+      {showHint && <span className="git-mode-hint">{activeHint}</span>}
     </>
   );
 }

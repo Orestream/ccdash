@@ -18,18 +18,22 @@ import {
   setSessionMode,
   stopSession,
   unpreviewSession,
+  updateProject,
 } from '../api/client';
 import type {
   Message,
   PermissionDecision,
   PermissionMode,
   PermissionRequest,
+  Project,
+  ProjectGitMode,
   Session,
 } from '../types';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { useSessionStream } from '../hooks/useSessionStream';
 import { StatusBadge } from './StatusBadge';
 import { ModeSelector } from './ModeSelector';
+import { GitModeSelector } from './GitModeSelector';
 import { ApprovalMenu } from './ApprovalMenu';
 import { ConfirmDialog } from './ConfirmDialog';
 import { parseToolContent } from './toolContent';
@@ -87,7 +91,8 @@ export function SessionView({ sessionId }: SessionViewProps) {
   // Guards the title editor's exit so Enter/Escape and the unmount blur don't
   // double-fire (see finishEditTitle).
   const editingRef = useRef(false);
-  const [projectPath, setProjectPath] = useState<string>('');
+  const [project, setProject] = useState<Project | null>(null);
+  const [gitModeBusy, setGitModeBusy] = useState(false);
   const [previewBusy, setPreviewBusy] = useState(false);
   const [acceptBusy, setAcceptBusy] = useState(false);
   const [cancelBusy, setCancelBusy] = useState(false);
@@ -151,19 +156,24 @@ export function SessionView({ sessionId }: SessionViewProps) {
     return () => controller.abort();
   }, [sessionId, resetStream]);
 
-  // Fetch the project path so the preview confirm modal can show where the
-  // diff will be applied. Best-effort; if it fails the modal falls back to a
-  // generic phrase.
+  // Fetch the parent project so the header can show/edit project-level
+  // settings (git mode) and the preview confirm modal can show where the
+  // diff will be applied. Best-effort; if it fails the related controls hide.
   useEffect(() => {
-    if (!session?.projectId) return;
+    if (!session?.projectId) {
+      setProject(null);
+      return;
+    }
     const controller = new AbortController();
     getProject(session.projectId, controller.signal)
-      .then((p) => setProjectPath(p.path))
+      .then(setProject)
       .catch(() => {
         /* best-effort */
       });
     return () => controller.abort();
   }, [session?.projectId]);
+
+  const projectPath = project?.path ?? '';
 
   // Recover pending permission requests on mount and whenever the WS (re)connects.
   useEffect(() => {
@@ -348,6 +358,27 @@ export function SessionView({ sessionId }: SessionViewProps) {
       setActionError(msg);
     }
   }, [sessionId]);
+
+  const handleProjectGitModeChange = useCallback(
+    async (mode: ProjectGitMode) => {
+      if (!project || project.gitMode === mode) return;
+      setActionError(null);
+      setGitModeBusy(true);
+      try {
+        const updated = await updateProject(project.id, { gitMode: mode });
+        setProject(updated);
+      } catch (err) {
+        const msg =
+          err instanceof ApiError || err instanceof Error
+            ? err.message
+            : 'failed to update project git mode';
+        setActionError(msg);
+      } finally {
+        setGitModeBusy(false);
+      }
+    },
+    [project],
+  );
 
   const handleModeChange = useCallback(
     async (mode: PermissionMode) => {
@@ -593,6 +624,17 @@ export function SessionView({ sessionId }: SessionViewProps) {
           )}
         </div>
         <div className="session-actions">
+          {project && (
+            <div className="session-git-mode">
+              <span className="session-git-mode-label">Project git mode</span>
+              <GitModeSelector
+                mode={project.gitMode}
+                onChange={(m) => void handleProjectGitModeChange(m)}
+                disabled={gitModeBusy}
+                showHint={false}
+              />
+            </div>
+          )}
           {session && (
             <ModeSelector
               mode={session.permissionMode}

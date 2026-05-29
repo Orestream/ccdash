@@ -967,9 +967,14 @@ a {
   color: var(--danger, #f87171);
 }
 
-/* Git-mode selector reuses the segmented look from .mode-selector. */
+/* Git-mode selector reuses the segmented look from .mode-selector. The
+   align-self / width pair keeps it from being stretched to fill the cross
+   axis when it sits inside a column flex parent (.new-project,
+   .project-settings, .session-git-mode). */
 .git-mode-selector {
   display: inline-flex;
+  align-self: flex-start;
+  width: fit-content;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   overflow: hidden;
@@ -1015,4 +1020,20 @@ a {
   text-transform: uppercase;
   letter-spacing: 0.05em;
   color: var(--text-muted);
+}
+
+/* Compact, label-on-top wrapper for the project git-mode switcher when it
+   lives inside the row-flex .session-actions area. */
+.session-git-mode {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.2rem;
+}
+.session-git-mode-label {
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  line-height: 1;
 }
